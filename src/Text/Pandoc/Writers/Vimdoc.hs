@@ -4,35 +4,43 @@
 
 module Text.Pandoc.Writers.Vimdoc (writeVimdoc) where
 
+import Control.Applicative (optional, (<|>))
 import Control.Monad (forM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Default (Default (..))
-import Data.Functor ((<&>), void)
+import Data.Maybe (fromJust)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Text.DocLayout hiding (char)
+import Text.Pandoc.Class (runPure)
 import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
-import Text.Pandoc.Options (WriterOptions (..), WrapOption (..))
-import Text.PrettyPrint (Style (..), renderStyle, style)
-import Text.Show.Pretty (ppDoc)
+import Text.Pandoc.Error (PandocError)
+import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
+import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
+import Text.Pandoc.Shared (capitalize, orderedListMarkers)
+import Text.Pandoc.Templates (renderTemplate)
+import Text.Pandoc.URI (isURI)
+import Text.Pandoc.Writers.Markdown (writeMarkdown)
+import Text.Pandoc.Writers.Shared (defField, metaToContext)
+import Text.Parsec (anyChar, char, eof, string, try)
 
--- NOTE: for comparison against markdown
+-- NOTE: used xwiki, typst, zimwiki writers as a reference
+
 -- NOTE: Test idea: each line in the render of random document not containing code block should not exceed textWidth characters
 
-import Text.Pandoc.Class (runPure)
-import Text.Pandoc.Writers.Markdown (writeCommonMark, writeMarkdown)
-import Text.Pandoc.Shared (orderedListMarkers, capitalize, trimr)
-import Text.Pandoc.URI (isURI)
-import Text.Pandoc.Parsing.General (readWithM, readWith, many1Till, many1TillChar)
-import Text.Pandoc.Error (PandocError, renderError)
-import Text.Parsec (string, try, manyTill, char, choice, eof, anyChar)
-import Control.Applicative (asum, (<|>), optional)
-import Text.Pandoc.Logging (LogMessage(ReferenceNotFound))
-import Text.Pandoc.Writers.Shared (metaToContext, defField)
-import Text.DocLayout (literal, render)
-import Text.Pandoc.Templates (renderTemplate)
-import Data.Maybe (fromJust)
+test =
+  let content =
+        [ LineBlock [[Str "qq"], [Str "hello"]]
+        -- , CodeBlock ("rust", ["rustt", "qq"], []) "hello"
+        , RawBlock "markdown" "hello\nqq"
+        ]
+      meta = mempty
+   in runPure $ writeMarkdown def (Pandoc (Meta meta) content)
+
+-- >>> test
+-- Right "qq  \nhello\n\nhello\nqq\n"
 
 data WriterState = WriterState
   { indentLevel :: Int -- How much to indent the block. Inlines shouldn't
@@ -56,15 +64,12 @@ wrapAuto = local (\st -> st{wrapText = WrapAuto})
 wrapNone = local (\st -> st{wrapText = WrapNone})
 wrapPreserve = local (\st -> st{wrapText = WrapPreserve})
 
--- NOTE: used XWiki writer as a reference
-
 -- TODO: rename to VimdocWriterS
 type WW = StateT WriterState
 
 -- TODO: rename to VimdocWriterR
 type RR m = ReaderT WriterState m
 
--- TODO: Maybe rename to vimhelp?
 writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
 writeVimdoc opts (Pandoc meta body) =
   evalStateT (pandocToVimdoc opts (Pandoc meta body)) def
@@ -74,33 +79,25 @@ pandocToVimdoc opts (Pandoc meta body) = do
   st <- get
   metadata <-
     flip runReaderT st $
-      metaToContext
-        opts
-        (fmap (literal . trimr) . blockListToVimdoc)
-        (fmap (literal . trimr) . inlineListToVimdoc)
-        meta
+      metaToContext opts blockListToVimdoc inlineListToVimdoc meta
   main <- runReaderT (blockListToVimdoc body) st
 
   let context =
         defField "body" main $
           defField "toc" (writerTableOfContents opts) metadata
 
+  -- TODO: generate header (name, filename, modification date)
+  -- TODO: generate TOC (check whether vim's gO supports more then 2 levels)
   -- TODO: generate modeline (vim:tw=xx:sw=x:...)
   pure $
     case writerTemplate opts of
       Just tpl -> render (Just $ textWidth st) $ renderTemplate tpl context
-      Nothing -> main
+      Nothing -> render (Just $ textWidth st) main
 
-vcat :: [Text] -> Text
-vcat = T.intercalate "\n"
-
--- TODO: use text builder instead of concatenating text?
-
-blockListToVimdoc :: (PandocMonad m) => [Block] -> RR m Text
+blockListToVimdoc :: (PandocMonad m) => [Block] -> RR m (Doc Text)
 blockListToVimdoc blocks = vcat <$> mapM blockToVimdoc blocks
 
--- TODO: respect textWidth
-blockToVimdoc :: (PandocMonad m) => Block -> RR m Text
+blockToVimdoc :: (PandocMonad m) => Block -> RR m (Doc Text)
 
 blockToVimdoc (Plain inlines) = inlineListToVimdoc inlines
 
@@ -110,20 +107,24 @@ blockToVimdoc (Para inlines) = do
 
 blockToVimdoc (LineBlock inliness) = vcat <$> mapM inlineListToVimdoc inliness
 
-blockToVimdoc (CodeBlock (_, cls, _) code) =
-  case cls of
-    -- TODO: indent code indentLevel + shiftWidth
-    (lang : _) -> pure $ ">" <> lang <> "\n" <> code <> "\n<"
-    _ -> pure $ ">" <> "\n" <> code <> "\n<"
+blockToVimdoc (CodeBlock (_, cls, _) code) = do
+  sw <- asks shiftWidth
+  let lang = case cls of
+        (lang : _) -> lang
+        _ -> ""
+  pure . vcat $
+    [ ">" <> literal lang
+    , nest sw (literal code)
+    , flush "<"
+    ]
 
--- TODO: vimdoc -> vimhelp?
 blockToVimdoc (RawBlock format raw) = case format of
-  "vimdoc" -> pure raw
+  "vimdoc" -> pure $ literal raw
   _ -> pure ""
 
 blockToVimdoc (BlockQuote blocks) = do
   content <- blockListToVimdoc blocks
-  pure $ "| " <> content
+  pure $ prefixed "| " content
 
 blockToVimdoc (OrderedList listAttr items) = do
   -- TODO: renamer
@@ -134,7 +135,7 @@ blockToVimdoc (OrderedList listAttr items) = do
     -- TODO: it is definitely wrong.
     -- It will produce <indent> <marker> <space> <indent> <content>
     item <- local (\r -> r{indentLevel = indentLevel r + markerLen + 1}) $ blockListToVimdoc blocks
-    pure $ T.replicate il " " <> marker <> " " <> item
+    pure $ literal (T.replicate il " ") <> literal marker <> " " <> item
   pure $ vcat items'
 
 blockToVimdoc (BulletList items) = do
@@ -142,7 +143,7 @@ blockToVimdoc (BulletList items) = do
     il <- asks indentLevel
     let marker = "-"
     item <- local (\r -> r{indentLevel=indentLevel r + 2}) $ blockListToVimdoc blocks
-    pure $ T.replicate il " " <> marker <> " " <> item
+    pure $ literal (T.replicate il " ") <> marker <> " " <> item
   pure $ vcat items'
 
 
@@ -161,20 +162,23 @@ blockToVimdoc (DefinitionList items) = do
       [Span (_, _, attrs) inlines] -> mkVimdocDefinition inlines attrs
       _ -> mkVimdocDefinition term []
 
+    r <- ask
     definition' <-
-      local (\r -> r{indentLevel = indentLevel r + 2 * shiftWidth r})
-        . fmap (T.intercalate "\n\n")
-        $ traverse blockListToVimdoc definitions
+      (nest (indentLevel r + 2 * shiftWidth r) . vsep)
+        <$> traverse blockListToVimdoc definitions
+      -- local (\r -> r{indentLevel = indentLevel r + 2 * shiftWidth r})
+      --   . fmap (T.intercalate "\n\n")
+      --   $ traverse blockListToVimdoc definitions
 
-    pure $ labeledTerm <> "\n" <> definition'
-  pure $ vcat items'
+    pure $ labeledTerm <> cr <> definition'
+  pure $ vsep items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
 blockToVimdoc (Header level (_, _, attr) text) = do
   tw <- asks textWidth
   let rule = case level of
-        1 -> T.replicate tw "=" <> "\n"
-        2 -> T.replicate tw "-" <> "\n"
+        1 -> T.replicate tw "="
+        2 -> T.replicate tw "-"
         _ -> ""
   let labels =
         [ "*" <> label <> "*"
@@ -182,23 +186,22 @@ blockToVimdoc (Header level (_, _, attr) text) = do
         , attrName == "label"
         ]
   let labeled = T.intercalate " " labels
-  text' <- inlineListToVimdoc $ case level of
+  text' <- fmap (render Nothing) . inlineListToVimdoc $ case level of
     3 -> capitalize text
     _ -> text
 
   let spaceLeft = tw - T.length text'
 
-  pure $
-    T.concat
-      [ rule
-      , text'
-      , T.justifyRight spaceLeft ' ' labeled
-      , "\n"
+  pure $ vcat
+      [ blankline
+      , literal rule
+      , literal $ text' <> T.justifyRight spaceLeft ' ' labeled
+      , blankline
       ]
 
 blockToVimdoc HorizontalRule = do
   tw <- asks textWidth
-  pure $ T.replicate tw "-"
+  pure . literal $ T.replicate tw "-"
 
 -- TODO: noop
 blockToVimdoc (Table _ blkCapt specs thead tbody tfoot) = pure ""
@@ -209,7 +212,11 @@ blockToVimdoc (Figure attr caption blocks) = blockListToVimdoc blocks
 
 blockToVimdoc (Div attr blocks) = blockListToVimdoc blocks
 
-mkVimdocDefinition :: (PandocMonad m) => [Inline] -> [(Text, Text)] -> RR m Text
+mkVimdocDefinition ::
+  (PandocMonad m) =>
+  [Inline] ->
+  [(Text, Text)] ->
+  RR m (Doc Text)
 mkVimdocDefinition term attrs = do
   sw <- asks shiftWidth
   tw <- asks textWidth
@@ -219,45 +226,29 @@ mkVimdocDefinition term attrs = do
         , attrName == "label"
         ]
   let catLabels = T.intercalate " " labels
-  term' <- inlineListToVimdoc term
+  term' <- render Nothing <$> inlineListToVimdoc term
   let termLen = sw + T.length term'
   let labelsLen = T.length catLabels
 
   pure $
     if termLen + labelsLen > tw
       then
-        T.concat
-          [ T.justifyRight tw ' ' catLabels
-          , "\n"
-          , T.replicate sw " "
-          , term'
+        vcat
+          [ rblock tw (literal catLabels)
+          , rblock sw (literal term')
           ]
       else
-        T.concat
-          [ T.replicate sw " "
-          , term'
-          , T.replicate (2 * sw) " "
-          , catLabels
+        mconcat
+          [ rblock sw (literal term')
+          , rblock (tw - termLen) (literal catLabels)
           ]
 
-test =
-  let content =
-        [ LineBlock [[Str "qq"], [Str "hello"]]
-        -- , CodeBlock ("rust", ["rustt", "qq"], []) "hello"
-        , RawBlock "markdown" "hello\nqq"
-        ]
-      meta = mempty
-   in runPure $ writeMarkdown def (Pandoc (Meta meta) content)
+inlineListToVimdoc :: (PandocMonad m) => [Inline] -> RR m (Doc Text)
+inlineListToVimdoc inlines = hcat <$> mapM inlineToVimdoc inlines
 
--- >>> test
--- Right "qq  \nhello\n\nhello\nqq\n"
+inlineToVimdoc :: (PandocMonad m) => Inline -> RR m (Doc Text)
 
-inlineListToVimdoc :: (PandocMonad m) => [Inline] -> RR m Text
-inlineListToVimdoc inlines = mconcat <$> mapM inlineToVimdoc inlines
-
-inlineToVimdoc :: (PandocMonad m) => Inline -> RR m Text
-
-inlineToVimdoc (Str str) = pure str
+inlineToVimdoc (Str str) = pure $ literal str
 
 -- Can't find bold/italic/emph/underline in the syntax file
 -- ($VIMRUNTIME/syntax/help.vim)
@@ -281,18 +272,18 @@ inlineToVimdoc (Quoted typ inlines) =
 
 -- TODO: is there reasonable syntax? What does markdown do?
 inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
-inlineToVimdoc (Code _ inlines) = pure $ "`" <> inlines <> "`"
-inlineToVimdoc Space = pure " "
-inlineToVimdoc SoftBreak = pure ""
+inlineToVimdoc (Code _ inlines) = pure . literal $ "`" <> inlines <> "`"
+inlineToVimdoc Space = pure space
+inlineToVimdoc SoftBreak = pure space
 
 -- Are line breaks always allowed?
 inlineToVimdoc LineBreak = pure "\n"
 
 -- TODO: is it the best way to handle this?
-inlineToVimdoc (Math _mathType math) = pure $ "`$" <> math <> "$`"
+inlineToVimdoc (Math _mathType math) = pure . literal $ "`$" <> math <> "$`"
 
 inlineToVimdoc (RawInline (Format format) text) = case format of
-  "vimdoc" -> pure text
+  "vimdoc" -> pure $ literal text
   _ -> pure ""
 
 -- TODO: TEST: empty link generation
@@ -312,14 +303,14 @@ inlineToVimdoc (RawInline (Format format) text) = case format of
 -- >>> refdocLinkToLink "https://vimhelp.org/motion.txt.html#motion.txt"
 -- Right "motion.txt"
 inlineToVimdoc (Link _ txt (src, _)) = do
-  txt' <- inlineListToVimdoc txt
+  txt' <- render Nothing <$> inlineListToVimdoc txt
 
   let space =
         if " " `T.isSuffixOf` txt' && not (T.null txt')
           then ""
           else " "
 
-  pure $ case refdocLinkToLink src of
+  pure . literal $ case refdocLinkToLink src of
     Right link -> txt' <> space <> "|" <> link <> "|"
     Left _ | isURI src -> txt' <> " " <> src
     Left _ | "#" `T.isPrefixOf` src ->
