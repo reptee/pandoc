@@ -658,6 +658,7 @@ library
                    Text.Pandoc.Writers.AnnotatedTable,
                    Text.Pandoc.Writers.BibTeX,
                    Text.Pandoc.Writers.ANSI,
+                   Text.Pandoc.Writers.Vimdoc,
                    Text.Pandoc.PDF,
                    Text.Pandoc.UTF8,
                    Text.Pandoc.Scripting,
