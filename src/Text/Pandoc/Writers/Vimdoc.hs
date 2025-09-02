@@ -28,7 +28,7 @@ import Text.Parsec (anyChar, char, eof, string, try)
 import System.IO.Unsafe (unsafePerformIO)
 import Debug.Trace (traceShowId)
 import Text.Read (readMaybe)
-import Data.List (intercalate)
+import Data.List (intercalate, intersperse)
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
 
@@ -115,16 +115,29 @@ pandocToVimdoc opts (Pandoc meta body) = do
   metadata <- metaToContext opts blockListToVimdoc inlineListToVimdoc meta
   main <- traceShowId metadata `seq` blockListToVimdoc body
   let modeline = makeModeLine st
+  title <- inlineListToVimdoc $ docTitle meta
+  authors <- traverse inlineListToVimdoc $ docAuthors meta
+  let authors' = mconcat $ intersperse ("," <> space) (fmap nowrap authors)
+
+  let combinedTitle =
+        render (Just $ textWidth st) $
+          cblock (textWidth st) $
+            (title <> space)
+              <> (if null authors' then "" else "by" <> space <> authors')
+
+  -- This is placed here because I couldn't find a way to right-align text
+  -- inside template to the width specified by a variable
+  let toc_reminder =
+        render Nothing . rblock (textWidth st) $
+          ("Type |gO| to see the table of contents." :: Doc Text)
 
   let context =
         defField "body" main
           . defField "toc" (writerTableOfContents opts)
           . defField "modeline" modeline
+          . defField "combined-title" combinedTitle
+          . defField "toc-reminder" toc_reminder
           $ metadata
-
-  -- TODO: create template (how?)
-
-  -- TODO: generate header (name, filename, modification date)
 
   -- TODO: generate TOC (check whether vim's gO supports more then 2 levels)
   -- (see writerTableOfContents)
@@ -132,10 +145,7 @@ pandocToVimdoc opts (Pandoc meta body) = do
   pure $
     case writerTemplate opts of
       Just tpl -> render (Just $ textWidth st) $ renderTemplate tpl context
-      Nothing ->
-        render
-          (Just $ textWidth st)
-          (main <> blankline <> literal modeline)
+      Nothing -> render (Just $ textWidth st) main
 
 blockListToVimdoc :: (PandocMonad m) => [Block] -> RR m (Doc Text)
 blockListToVimdoc blocks = vcat <$> mapM blockToVimdoc blocks
