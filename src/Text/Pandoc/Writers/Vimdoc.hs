@@ -9,7 +9,7 @@ import Control.Monad (forM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Default (Default (..))
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.DocLayout hiding (char)
@@ -25,6 +25,10 @@ import Text.Pandoc.URI (isURI)
 import Text.Pandoc.Writers.Markdown (writeMarkdown)
 import Text.Pandoc.Writers.Shared (defField, metaToContext)
 import Text.Parsec (anyChar, char, eof, string, try)
+import System.IO.Unsafe (unsafePerformIO)
+import Debug.Trace (traceShowId)
+import Text.Read (readMaybe)
+import Data.List (intercalate)
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
 
@@ -64,35 +68,74 @@ wrapAuto = local (\st -> st{wrapText = WrapAuto})
 wrapNone = local (\st -> st{wrapText = WrapNone})
 wrapPreserve = local (\st -> st{wrapText = WrapPreserve})
 
--- TODO: rename to VimdocWriterS
-type WW = StateT WriterState
-
 -- TODO: rename to VimdocWriterR
 type RR m = ReaderT WriterState m
 
-writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
-writeVimdoc opts (Pandoc meta body) =
-  evalStateT (pandocToVimdoc opts (Pandoc meta body)) def
+docTextWidth :: Meta -> Maybe Int
+docTextWidth meta = case lookupMeta "textwidth" meta of
+  Just (MetaInlines [Str tw]) -> readMaybe (T.unpack tw)
+  Just (MetaString tw) -> readMaybe (T.unpack tw)
+  _ -> Nothing
 
-pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> WW m Text
+docShiftWidth :: Meta -> Maybe Int
+docShiftWidth meta = case lookupMeta "shiftwidth" meta of
+  Just (MetaInlines [Str sw]) -> readMaybe (T.unpack sw)
+  Just (MetaString sw) -> readMaybe (T.unpack sw)
+  _ -> Nothing
+
+makeModeLine :: WriterState -> Text
+makeModeLine ws =
+  T.pack . intercalate ":" $
+    [ " vim" -- deliberate extra space in the style of bundled help pages
+    , "tw=" <> show tw
+    , "sw=" <> show sw
+    , "ft=help"
+    , "norl" -- left-to-right text
+    , "et:" -- expandtab and finishing ":"
+    ]
+ where
+  tw = textWidth ws
+  sw = shiftWidth ws
+
+writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
+writeVimdoc opts document@(Pandoc meta _) =
+  -- TODO: remove
+  -- traceShowId (writerVariables opts) `seq`
+  --   traceShowId (meta) `seq`
+  runReaderT (pandocToVimdoc opts document) $
+    def{textWidth = tw, shiftWidth = sw}
+ where
+  tw = fromMaybe (textWidth def) $ docTextWidth meta
+  sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
+
+pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
 pandocToVimdoc opts (Pandoc meta body) = do
-  st <- get
-  metadata <-
-    flip runReaderT st $
-      metaToContext opts blockListToVimdoc inlineListToVimdoc meta
-  main <- runReaderT (blockListToVimdoc body) st
+  st <- ask
+
+  metadata <- metaToContext opts blockListToVimdoc inlineListToVimdoc meta
+  main <- traceShowId metadata `seq` blockListToVimdoc body
+  let modeline = makeModeLine st
 
   let context =
-        defField "body" main $
-          defField "toc" (writerTableOfContents opts) metadata
+        defField "body" main
+          . defField "toc" (writerTableOfContents opts)
+          . defField "modeline" modeline
+          $ metadata
+
+  -- TODO: create template (how?)
 
   -- TODO: generate header (name, filename, modification date)
+
   -- TODO: generate TOC (check whether vim's gO supports more then 2 levels)
-  -- TODO: generate modeline (vim:tw=xx:sw=x:...)
+  -- (see writerTableOfContents)
+
   pure $
     case writerTemplate opts of
       Just tpl -> render (Just $ textWidth st) $ renderTemplate tpl context
-      Nothing -> render (Just $ textWidth st) main
+      Nothing ->
+        render
+          (Just $ textWidth st)
+          (main <> blankline <> literal modeline)
 
 blockListToVimdoc :: (PandocMonad m) => [Block] -> RR m (Doc Text)
 blockListToVimdoc blocks = vcat <$> mapM blockToVimdoc blocks
@@ -127,7 +170,7 @@ blockToVimdoc (BlockQuote blocks) = do
   pure $ prefixed "| " content
 
 blockToVimdoc (OrderedList listAttr items) = do
-  -- TODO: renamer
+  -- TODO: rename
   let merged = (,) <$> items <*> orderedListMarkers listAttr
   items' <- forM merged $ \(blocks, marker) -> do
     il <- asks indentLevel
@@ -272,6 +315,8 @@ inlineToVimdoc (Quoted typ inlines) =
 
 -- TODO: is there reasonable syntax? What does markdown do?
 inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
+
+-- TODO: handle `:help <something>`, like panvimdoc
 inlineToVimdoc (Code _ inlines) = pure . literal $ "`" <> inlines <> "`"
 inlineToVimdoc Space = pure space
 inlineToVimdoc SoftBreak = pure space
