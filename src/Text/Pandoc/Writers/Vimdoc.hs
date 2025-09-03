@@ -64,6 +64,9 @@ instance Default WriterState where
       , wrapText = WrapAuto
       }
 
+indent :: (Monad m) => Int -> (RR m a) -> (RR m a)
+indent n = local (\s -> s{indentLevel = indentLevel s + n})
+
 wrapAuto, wrapNone, wrapPreserve :: (Monad m) => RR m a -> RR m a
 wrapAuto = local (\st -> st{wrapText = WrapAuto})
 wrapNone = local (\st -> st{wrapText = WrapNone})
@@ -204,28 +207,13 @@ blockToVimdoc (BulletList items) = do
 
 blockToVimdoc (DefinitionList items) = do
   items' <- forM items $ \(term, definitions) -> do
-    -- TODO: indent term 1*shiftWidth
-    -- TODO: indent definition 2*shiftWidth
+    labeledTerm <- mkVimdocDefinitionTerm term
 
-    labeledTerm <- case term of
-      -- TODO: also handle `Code attr code` the same way? It is easier to type
-      -- `code`{attrs} then [`code`]{attrs}.
-      -- TODO: Maybe it should also check for attributes like `mapping`, so it
-      -- will automatically generate labels that are literally the terms
-      -- themselves
-      code@[Code (_, _, attrs) inlines] -> mkVimdocDefinition code attrs
-      [Span (_, _, attrs) inlines] -> mkVimdocDefinition inlines attrs
-      _ -> mkVimdocDefinition term []
+    il <- asks indentLevel
+    sw <- asks shiftWidth
+    definitions' <- indent (2 * sw) $ traverse blockListToVimdoc definitions
 
-    r <- ask
-    definition' <-
-      (nest (indentLevel r + 2 * shiftWidth r) . vsep)
-        <$> traverse blockListToVimdoc definitions
-      -- local (\r -> r{indentLevel = indentLevel r + 2 * shiftWidth r})
-      --   . fmap (T.intercalate "\n\n")
-      --   $ traverse blockListToVimdoc definitions
-
-    pure $ labeledTerm <> cr <> definition'
+    pure $ labeledTerm <> cr <> nest (il + 2 * sw) (vsep definitions')
   pure $ vsep items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
@@ -264,36 +252,41 @@ blockToVimdoc (Figure attr caption blocks) = blockListToVimdoc blocks
 
 blockToVimdoc (Div attr blocks) = blockListToVimdoc blocks
 
-mkVimdocDefinition ::
+mkVimdocDefinitionTerm ::
   (PandocMonad m) =>
   [Inline] ->
-  [(Text, Text)] ->
   RR m (Doc Text)
-mkVimdocDefinition term attrs = do
+mkVimdocDefinitionTerm inlines = do
+  il <- asks indentLevel
   sw <- asks shiftWidth
   tw <- asks textWidth
-  let labels =
-        [ "*" <> label <> "*"
-        | (attrName, label) <- attrs
-        , attrName == "label"
-        ]
-  let catLabels = T.intercalate " " labels
-  term' <- render Nothing <$> inlineListToVimdoc term
-  let termLen = sw + T.length term'
-  let labelsLen = T.length catLabels
+  -- TODO: Maybe it should also check for attributes like `mapping`, so it
+  -- will automatically generate labels that are literally the terms
+  -- themselves
+  let label = case inlines of
+        [Code (ref, _, _) _] | not (T.null ref) -> Just $ "*" <> ref <> "*"
+        [Span (ref, _, _) _] | not (T.null ref) -> Just $ "*" <> ref <> "*"
+        _ -> Nothing
 
-  pure $
-    if termLen + labelsLen > tw
-      then
-        vcat
-          [ rblock tw (literal catLabels)
-          , rblock sw (literal term')
-          ]
-      else
-        mconcat
-          [ rblock sw (literal term')
-          , rblock (tw - termLen) (literal catLabels)
-          ]
+  term <- inlineListToVimdoc inlines
+  let termLen = sw + offset term
+  let labelsLen = maybe 0 T.length label
+
+  if il + termLen + labelsLen > tw
+    then
+      pure . mconcat $
+        [ case label of
+            Nothing -> empty
+            Just l -> rblock (tw) (literal l) <> cr
+        , nest sw term
+        ]
+    else
+      pure . mconcat $
+        [ nest sw term
+        , case label of
+            Nothing -> empty
+            Just l -> rblock (tw - termLen - il) (literal l)
+        ]
 
 inlineListToVimdoc :: (PandocMonad m) => [Inline] -> RR m (Doc Text)
 inlineListToVimdoc inlines = hcat <$> mapM inlineToVimdoc inlines
