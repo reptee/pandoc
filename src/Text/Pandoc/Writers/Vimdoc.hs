@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Strict #-}
+{-# LANGUAGE LambdaCase #-}
 
 
 module Text.Pandoc.Writers.Vimdoc (writeVimdoc) where
@@ -182,25 +183,24 @@ blockToVimdoc (BlockQuote blocks) = do
   pure $ prefixed "| " content
 
 blockToVimdoc (OrderedList listAttr items) = do
-  -- TODO: rename
-  let merged = (,) <$> items <*> orderedListMarkers listAttr
-  items' <- forM merged $ \(blocks, marker) -> do
+  -- TODO: both ordered and bullet- lists have no spacing between items
+  -- regargless of content. It may make sense to add blankline if there is a
+  -- paragraph or a nested list. (see isParaOrList from Writers/Jats)
+  let itemsWithMarkers = zip (orderedListMarkers listAttr) items
+  items' <- forM itemsWithMarkers $ \(marker, blocks) -> do
     il <- asks indentLevel
     let markerLen = T.length marker
-    -- TODO: it is definitely wrong.
-    -- It will produce <indent> <marker> <space> <indent> <content>
-    item <- local (\r -> r{indentLevel = indentLevel r + markerLen + 1}) $ blockListToVimdoc blocks
-    pure $ literal (T.replicate il " ") <> literal marker <> " " <> item
+
+    item' <- blockListToVimdoc blocks
+    pure . nest il $ literal marker <> space <> nest (markerLen + 1) item'
   pure $ vcat items'
 
 blockToVimdoc (BulletList items) = do
   items' <- forM items $ \blocks -> do
-    il <- asks indentLevel
     let marker = "-"
-    item <- local (\r -> r{indentLevel=indentLevel r + 2}) $ blockListToVimdoc blocks
-    pure $ literal (T.replicate il " ") <> marker <> " " <> item
+    item <- blockListToVimdoc blocks
+    pure $ marker <> " " <> nest 2 item
   pure $ vcat items'
-
 
 blockToVimdoc (DefinitionList items) = do
   items' <- forM items $ \(term, definitions) -> do
