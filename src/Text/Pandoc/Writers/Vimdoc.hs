@@ -191,29 +191,28 @@ blockToVimdoc (OrderedList listAttr items) = do
   -- paragraph or a nested list. (see isParaOrList from Writers/Jats)
   let itemsWithMarkers = zip (orderedListMarkers listAttr) items
   items' <- forM itemsWithMarkers $ \(marker, blocks) -> do
-    il <- asks indentLevel
     let markerLen = T.length marker
 
-    item' <- blockListToVimdoc blocks
-    pure . nest il $ literal marker <> space <> nest (markerLen + 1) item'
+    item' <- indent (markerLen + 1) $ blockListToVimdoc blocks
+    pure $ literal marker <> space <> nest (markerLen + 1) item'
   pure $ vcat items'
 
 blockToVimdoc (BulletList items) = do
   items' <- forM items $ \blocks -> do
     let marker = "-"
-    item <- blockListToVimdoc blocks
+    item <- indent 2 $ blockListToVimdoc blocks
     pure $ marker <> " " <> nest 2 item
   pure $ vcat items'
 
 blockToVimdoc (DefinitionList items) = do
+  sw <- asks shiftWidth
   items' <- forM items $ \(term, definitions) -> do
-    labeledTerm <- mkVimdocDefinitionTerm term
+    labeledTerm <- indent sw $ mkVimdocDefinitionTerm term
 
-    il <- asks indentLevel
     sw <- asks shiftWidth
     definitions' <- indent (2 * sw) $ traverse blockListToVimdoc definitions
 
-    pure $ labeledTerm <> cr <> nest (il + 2 * sw) (vsep definitions')
+    pure $ nest sw labeledTerm <> cr <> nest (2 * sw) (vsep definitions')
   pure $ vsep items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
@@ -258,7 +257,6 @@ mkVimdocDefinitionTerm ::
   RR m (Doc Text)
 mkVimdocDefinitionTerm inlines = do
   il <- asks indentLevel
-  sw <- asks shiftWidth
   tw <- asks textWidth
   -- TODO: Maybe it should also check for attributes like `mapping`, so it
   -- will automatically generate labels that are literally the terms
@@ -269,20 +267,20 @@ mkVimdocDefinitionTerm inlines = do
         _ -> Nothing
 
   term <- inlineListToVimdoc inlines
-  let termLen = sw + offset term
-  let labelsLen = maybe 0 T.length label
+  let termLen = offset term
+  let labelLen = maybe 0 T.length label
 
-  if il + termLen + labelsLen > tw
+  if il + termLen + labelLen > tw
     then
       pure . mconcat $
         [ case label of
             Nothing -> empty
-            Just l -> rblock (tw) (literal l) <> cr
-        , nest sw term
+            Just l -> flush (rblock tw $ literal l) <> cr
+        , term
         ]
     else
       pure . mconcat $
-        [ nest sw term
+        [ term
         , case label of
             Nothing -> empty
             Just l -> rblock (tw - termLen - il) (literal l)
