@@ -239,7 +239,9 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
     3 -> capitalize inlines
     _ -> inlines
 
-  let label = "*" <> ref <> "*"
+  -- One manual space that ensures that even if spaceLeft is 0, title and ref
+  -- don't touch each other
+  let label = " *" <> ref <> "*"
   let spaceLeft = tw - T.length title
 
   pure $ vcat
