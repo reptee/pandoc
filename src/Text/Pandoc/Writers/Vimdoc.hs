@@ -23,7 +23,7 @@ import Text.Pandoc.Shared (capitalize, orderedListMarkers)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (isURI)
 import Text.Pandoc.Writers.Markdown (writeMarkdown)
-import Text.Pandoc.Writers.Shared (defField, metaToContext)
+import Text.Pandoc.Writers.Shared (defField, metaToContext, toTableOfContents)
 import Text.Parsec (anyChar, char, eof, string, try)
 import System.IO.Unsafe (unsafePerformIO)
 import Debug.Trace (traceShowId)
@@ -131,16 +131,18 @@ pandocToVimdoc opts (Pandoc meta body) = do
         render Nothing . rblock (textWidth st) $
           ("Type |gO| to see the table of contents." :: Doc Text)
 
+  -- TODO: nicer TOC (like `:h undotree-contents`)
+  toc <-
+    fmap (render (Just $ textWidth st)) . blockToVimdoc $
+      toTableOfContents opts body
+
   let context =
         defField "body" main
-          . defField "toc" (writerTableOfContents opts)
+          . defField "toc" (if writerTableOfContents opts then toc else "")
           . defField "modeline" modeline
           . defField "combined-title" combinedTitle
           . defField "toc-reminder" toc_reminder
           $ metadata
-
-  -- TODO: generate TOC (check whether vim's gO supports more then 2 levels)
-  -- (see writerTableOfContents)
 
   pure $
     case writerTemplate opts of
@@ -227,28 +229,23 @@ blockToVimdoc (DefinitionList items) = do
   pure $ vsep items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
-blockToVimdoc (Header level (_, _, attr) text) = do
+blockToVimdoc (Header level (ref, _, _) inlines) = do
   tw <- asks textWidth
   let rule = case level of
         1 -> T.replicate tw "="
         2 -> T.replicate tw "-"
         _ -> ""
-  let labels =
-        [ "*" <> label <> "*"
-        | (attrName, label) <- attr
-        , attrName == "label"
-        ]
-  let labeled = T.intercalate " " labels
-  text' <- fmap (render Nothing) . inlineListToVimdoc $ case level of
-    3 -> capitalize text
-    _ -> text
+  title <- fmap (render Nothing) . inlineListToVimdoc $ case level of
+    3 -> capitalize inlines
+    _ -> inlines
 
-  let spaceLeft = tw - T.length text'
+  let label = "*" <> ref <> "*"
+  let spaceLeft = tw - T.length title
 
   pure $ vcat
       [ blankline
       , literal rule
-      , literal $ text' <> T.justifyRight spaceLeft ' ' labeled
+      , literal $ title <> T.justifyRight spaceLeft ' ' label
       , blankline
       ]
 
