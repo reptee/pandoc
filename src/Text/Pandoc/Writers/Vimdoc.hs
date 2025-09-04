@@ -324,7 +324,10 @@ inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
 -- TODO: handle `:help <something>` and `:h <something>`, like panvimdoc
 inlineToVimdoc (Code _ inlines) = pure . literal $ "`" <> inlines <> "`"
 inlineToVimdoc Space = pure space
-inlineToVimdoc SoftBreak = pure space
+inlineToVimdoc SoftBreak = asks wrapText >>= \case
+  WrapAuto -> pure space
+  WrapNone -> pure space
+  WrapPreserve -> pure "\n"
 
 -- Are line breaks always allowed?
 inlineToVimdoc LineBreak = pure "\n"
