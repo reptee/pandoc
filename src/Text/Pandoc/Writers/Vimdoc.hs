@@ -23,7 +23,7 @@ import Text.Pandoc.Options (WrapOption (..), WriterOptions (..), isEnabled, Exte
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
 import Text.Pandoc.Shared (capitalize, orderedListMarkers, onlySimpleTableCells)
 import Text.Pandoc.Templates (renderTemplate)
-import Text.Pandoc.URI (isURI)
+import Text.Pandoc.URI (isURI, escapeURI)
 import Text.Pandoc.Writers.Markdown (writeMarkdown)
 import Text.Pandoc.Writers.Shared (defField, metaToContext, toTableOfContents, toLegacyTable)
 import Text.Parsec (anyChar, char, eof, string, try)
@@ -489,8 +489,12 @@ inlineToVimdoc inline@(RawInline (Format format) text) = case format of
 -- TODO: TEST:
 -- >>> refdocLinkToLink "https://vimhelp.org/motion.txt.html#motion.txt"
 -- Right "motion.txt"
-inlineToVimdoc (Link _ txt (src, _)) = do
+inlineToVimdoc (Link _ txt (src, _title)) = do
   txt' <- render Nothing <$> inlineListToVimdoc txt
+
+  let isShortlink = case txt of
+        [Str x] | escapeURI x == src -> True
+        _ -> False
 
   let space =
         if " " `T.isSuffixOf` txt' && not (T.null txt')
@@ -498,12 +502,15 @@ inlineToVimdoc (Link _ txt (src, _)) = do
           else " "
 
   pure . literal $ case refdocLinkToLink src of
+    Right link | isShortlink -> "|" <> link <> "|"
     Right link -> txt' <> space <> "|" <> link <> "|"
+    Left _ | isURI src, isShortlink -> src
     Left _ | isURI src -> txt' <> " " <> src
-    Left _ | "#" `T.isPrefixOf` src ->
-      -- TODO: something more elegant?
-      let src' = fromJust (T.stripPrefix "#" src)
-       in txt' <> space <> "|" <> src' <> "|"
+    Left _
+      | "#" `T.isPrefixOf` src ->
+          -- TODO: something more elegant?
+          let src' = fromJust (T.stripPrefix "#" src)
+           in txt' <> space <> "|" <> src' <> "|"
     -- TODO: vimdoc-TS does not seem to expect any extra characters around URL:
     -- https://github.com/neovim/tree-sitter-vimdoc/blob/ffa29e863738adfc1496717c4acb7aae92a80ed4/grammar.js#L225
     Left _ -> txt' <> space <> "<" <> src <> ">"
