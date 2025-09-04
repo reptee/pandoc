@@ -14,7 +14,7 @@ import Data.Maybe (fromJust, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.DocLayout hiding (char)
-import Text.Pandoc.Class (runPure)
+import Text.Pandoc.Class (runPure, report)
 import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
 import Text.Pandoc.Error (PandocError)
@@ -30,6 +30,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import Debug.Trace (traceShowId)
 import Text.Read (readMaybe)
 import Data.List (intercalate, intersperse)
+import Text.Pandoc.Logging (LogMessage(..))
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
 
@@ -177,9 +178,9 @@ blockToVimdoc (CodeBlock (_, cls, _) code) = do
     , flush "<"
     ]
 
-blockToVimdoc (RawBlock format raw) = case format of
+blockToVimdoc block@(RawBlock format raw) = case format of
   "vimdoc" -> pure $ literal raw
-  _ -> pure ""
+  _ -> "" <$ report (BlockNotRendered block)
 
 blockToVimdoc (BlockQuote blocks) = do
   content <- blockListToVimdoc blocks
@@ -327,9 +328,9 @@ inlineToVimdoc LineBreak = pure "\n"
 -- TODO: is it the best way to handle this?
 inlineToVimdoc (Math _mathType math) = pure . literal $ "`$" <> math <> "$`"
 
-inlineToVimdoc (RawInline (Format format) text) = case format of
+inlineToVimdoc inline@(RawInline (Format format) text) = case format of
   "vimdoc" -> pure $ literal text
-  _ -> pure ""
+  _ -> "" <$ report (InlineNotRendered inline)
 
 -- TODO: TEST: empty link generation
 -- TODO: TEST:
