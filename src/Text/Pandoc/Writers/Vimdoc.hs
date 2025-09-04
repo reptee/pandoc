@@ -168,7 +168,7 @@ blockToVimdoc (Plain inlines) = inlineListToVimdoc inlines
 
 blockToVimdoc (Para inlines) = do
   contents <- inlineListToVimdoc inlines
-  pure $ contents <> "\n"
+  pure $ contents <> blankline
 
 blockToVimdoc (LineBlock inliness) = vcat <$> mapM inlineListToVimdoc inliness
 
