@@ -88,6 +88,7 @@ docShiftWidth meta = case lookupMeta "shiftwidth" meta of
   Just (MetaString sw) -> readMaybe (T.unpack sw)
   _ -> Nothing
 
+-- TODO: add tabstop
 makeModeLine :: WriterState -> Text
 makeModeLine ws =
   T.pack . intercalate ":" $
@@ -229,6 +230,9 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
 
   -- One manual space that ensures that even if spaceLeft is 0, title and ref
   -- don't touch each other
+  -- TODO: helper function to create labels. Add prefix (project name? input
+  -- file name with stripped ext?) to each label so that
+  -- each label was unique
   let label = " *" <> ref <> "*"
   let spaceLeft = tw - T.length title
 
@@ -317,7 +321,7 @@ inlineToVimdoc (Quoted typ inlines) =
 -- TODO: is there reasonable syntax? What does markdown do?
 inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
 
--- TODO: handle `:help <something>`, like panvimdoc
+-- TODO: handle `:help <something>` and `:h <something>`, like panvimdoc
 inlineToVimdoc (Code _ inlines) = pure . literal $ "`" <> inlines <> "`"
 inlineToVimdoc Space = pure space
 inlineToVimdoc SoftBreak = pure space
