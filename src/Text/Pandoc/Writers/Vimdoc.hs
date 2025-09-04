@@ -430,17 +430,12 @@ inlineToVimdoc :: (PandocMonad m) => Inline -> RR m (Doc Text)
 
 inlineToVimdoc (Str str) = pure $ literal str
 
--- Can't find bold/italic/emph/underline in the syntax file
--- ($VIMRUNTIME/syntax/help.vim)
--- Can't find it in TS grammar definition either
--- https://github.com/neovim/tree-sitter-vimdoc/blob/master/grammar.js
--- TODO: check what panvimdoc does
-
+-- Neither `:h help-writing`, nor neovim's grammar.js for vimdoc and
+-- highlights.scm say anything about styling text, so we strip all the
+-- formatting
 inlineToVimdoc (Emph inlines) = inlineListToVimdoc inlines
 inlineToVimdoc (Underline inlines) = inlineListToVimdoc inlines
 inlineToVimdoc (Strong inlines) = inlineListToVimdoc inlines
-
--- Neither does vimdoc has any support for these
 inlineToVimdoc (Strikeout inlines) = inlineListToVimdoc inlines
 inlineToVimdoc (Superscript inlines) = inlineListToVimdoc inlines
 inlineToVimdoc (Subscript inlines) = inlineListToVimdoc inlines
