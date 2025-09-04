@@ -448,8 +448,15 @@ inlineToVimdoc (Quoted typ inlines) =
 -- TODO: is there reasonable syntax? What does markdown do?
 inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
 
--- TODO: handle `:help <something>` and `:h <something>`, like panvimdoc
-inlineToVimdoc (Code _ inlines) = pure . literal $ "`" <> inlines <> "`"
+{- FOURMOLU_DISABLE -}
+inlineToVimdoc (Code (_, cls, _) code) = do
+  let hasNoLang = null cls
+  pure . literal $ case T.words code of
+    [":help", ref] | hasNoLang -> "|" <> ref <> "|"
+    [":h", ref]    | hasNoLang -> "|" <> ref <> "|"
+    _                          -> "`" <> code <> "`"
+{- FOURMOLU_ENABLE -}
+
 inlineToVimdoc Space = pure space
 inlineToVimdoc SoftBreak = asks wrapText >>= \case
   WrapAuto -> pure space
