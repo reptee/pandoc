@@ -363,8 +363,6 @@ pandocTable ::
   [[Doc Text]] ->
   RR m (Doc Text)
 pandocTable multiline headless aligns widths rawHeaders rawRows = do
-  tw <- asks textWidth
-  wrap <- asks wrapText
   let isSimple = all (== 0) widths
   let alignHeader alignment = case alignment of
         AlignLeft -> lblock
@@ -380,6 +378,15 @@ pandocTable multiline headless aligns widths rawHeaders rawRows = do
   -- The @+2@ is needed for specifying the alignment.
   let minNumChars = (+ 2) . maybe 0 maximum . nonEmpty . map minOffset
   let columns = transpose (rawHeaders : rawRows)
+
+  il <- asks indentLevel
+
+  -- x = (2 * length columns)         -- spaces for specifying the alignment
+  -- y = (length columns - 1)         -- spaces between the columns
+  -- x + y = (3 * length columns - 1) -- total needed correction
+  tw <- asks (\st -> textWidth st - il - 3 * length columns + 1)
+  wrap <- asks wrapText
+
   -- minimal column width without wrapping a single word
   let relWidth w col =
         max
@@ -396,21 +403,12 @@ pandocTable multiline headless aligns widths rawHeaders rawRows = do
           . intersperse (lblock 1 (literal " "))
           . zipWith3 alignHeader aligns widthsInChars
   let rows' = map makeRow rawRows
-  let head' = makeRow rawHeaders
-  let underline =
-        mconcat $
-          intersperse (literal " ") $
-            map (\width -> literal (T.replicate width "-")) widthsInChars
-  let border
-        | multiline =
-            literal $
-              T.replicate (sum widthsInChars + length widthsInChars - 1) "-"
-        | headless = underline
-        | otherwise = empty
+  -- TODO: reduce tw in case head is not empty
+  let head' = makeRow rawHeaders <> " ~"
   let head'' =
         if headless
           then empty
-          else border <> cr <> head'
+          else head'
   let body =
         if multiline
           then
@@ -419,11 +417,11 @@ pandocTable multiline headless aligns widths rawHeaders rawRows = do
                 then blankline -- #4578
                 else empty
           else vcat rows'
-  let bottom =
-        if headless
-          then underline
-          else border
-  return $ head'' $$ underline $$ body $$ bottom
+  return $
+    blankline
+      $$ head''
+      $$ (if multiline then blankline else empty)
+      $$ body
 
 inlineListToVimdoc :: (PandocMonad m) => [Inline] -> RR m (Doc Text)
 inlineListToVimdoc inlines = hcat <$> mapM inlineToVimdoc inlines
