@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Strict #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 
 
 module Text.Pandoc.Writers.Vimdoc (writeVimdoc) where
@@ -18,19 +19,20 @@ import Text.Pandoc.Class (runPure, report)
 import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
 import Text.Pandoc.Error (PandocError)
-import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
+import Text.Pandoc.Options (WrapOption (..), WriterOptions (..), isEnabled, Extension (..))
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
-import Text.Pandoc.Shared (capitalize, orderedListMarkers)
+import Text.Pandoc.Shared (capitalize, orderedListMarkers, onlySimpleTableCells)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (isURI)
 import Text.Pandoc.Writers.Markdown (writeMarkdown)
-import Text.Pandoc.Writers.Shared (defField, metaToContext, toTableOfContents)
+import Text.Pandoc.Writers.Shared (defField, metaToContext, toTableOfContents, toLegacyTable)
 import Text.Parsec (anyChar, char, eof, string, try)
 import System.IO.Unsafe (unsafePerformIO)
 import Debug.Trace (traceShowId)
 import Text.Read (readMaybe)
-import Data.List (intercalate, intersperse)
+import Data.List (intercalate, intersperse, transpose)
 import Text.Pandoc.Logging (LogMessage(..))
+import Data.List.NonEmpty (nonEmpty, NonEmpty (..))
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
 
@@ -54,6 +56,7 @@ data WriterState = WriterState
   , textWidth :: Int -- maximum length of a line
   , shiftWidth :: Int -- spaces per indentation level
   , wrapText :: WrapOption
+  , writerOptions :: WriterOptions
   }
 
 instance Default WriterState where
@@ -63,6 +66,7 @@ instance Default WriterState where
       , textWidth = 78
       , shiftWidth = 4
       , wrapText = WrapAuto
+      , writerOptions = def
       }
 
 indent :: (Monad m) => Int -> (RR m a) -> (RR m a)
@@ -109,7 +113,7 @@ writeVimdoc opts document@(Pandoc meta _) =
   -- traceShowId (writerVariables opts) `seq`
   --   traceShowId (meta) `seq`
   runReaderT (pandocToVimdoc opts document) $
-    def{textWidth = tw, shiftWidth = sw}
+    def{textWidth = tw, shiftWidth = sw, writerOptions = opts}
  where
   tw = fromMaybe (textWidth def) $ docTextWidth meta
   sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
@@ -247,8 +251,59 @@ blockToVimdoc HorizontalRule = do
   tw <- asks textWidth
   pure . literal $ T.replicate tw "-"
 
--- TODO: noop
-blockToVimdoc (Table _ blkCapt specs thead tbody tfoot) = pure ""
+-- Based on blockToMarkdown' from Text.Pandoc.Writers.Markdown
+blockToVimdoc t@(Table (_, _, _) blkCapt specs thead tbody tfoot) = do
+  let isColRowSpans (Cell _ _ rs cs _) = rs > 1 || cs > 1
+  let rowHasColRowSpans (Row _ cs) = any isColRowSpans cs
+  let tbodyHasColRowSpans (TableBody _ _ rhs rs) =
+        any rowHasColRowSpans rhs || any rowHasColRowSpans rs
+  let theadHasColRowSpans (TableHead _ rs) = any rowHasColRowSpans rs
+  let tfootHasColRowSpans (TableFoot _ rs) = any rowHasColRowSpans rs
+  let hasColRowSpans =
+        theadHasColRowSpans thead
+          || any tbodyHasColRowSpans tbody
+          || tfootHasColRowSpans tfoot
+  let (caption, aligns, widths, headers, rows) =
+        toLegacyTable blkCapt specs thead tbody tfoot
+  let numcols =
+        maximum $
+          length aligns :| length widths : map length (headers : rows)
+  caption' <- inlineListToVimdoc caption
+  let caption''
+        | null caption = blankline
+        | otherwise = blankline $$ caption' $$ blankline
+  let hasSimpleCells = onlySimpleTableCells $ headers : rows
+  let isSimple = hasSimpleCells && all (== 0) widths && not hasColRowSpans
+  let isPlainBlock (Plain _) = True
+      isPlainBlock _ = False
+  let hasBlocks = not (all (all (all isPlainBlock)) $ headers : rows)
+  let padRow r = r ++ replicate x empty
+       where
+        x = numcols - length r
+  let aligns' = aligns ++ replicate x AlignDefault
+       where
+        x = numcols - length aligns
+  let widths' = widths ++ replicate x 0.0
+       where
+        x = numcols - length widths
+  sw <- asks shiftWidth
+  rawHeaders <- padRow <$> mapM blockListToVimdoc headers
+  rawRows <- mapM (fmap padRow . mapM blockListToVimdoc) rows
+  let hasHeader = all null headers
+  if
+    | isSimple -> do
+        -- Simple table
+        tbl <-
+          indent sw $
+            pandocTable False hasHeader aligns' widths' rawHeaders rawRows
+        pure $ nest sw (tbl $$ caption'') $$ blankline
+    | not (hasBlocks || hasColRowSpans) -> do
+        -- Multiline table
+        tbl <-
+          indent sw $
+            pandocTable True hasHeader aligns' widths' rawHeaders rawRows
+        pure $ nest sw (tbl $$ caption'') $$ blankline
+    | otherwise -> ("[TABLE]" $$ caption'') <$ report (BlockNotRendered t)
 
 -- TODO: how to handle figures in a format that can't display them?
 -- see how panvimdoc accomplishes it
@@ -290,6 +345,85 @@ mkVimdocDefinitionTerm inlines = do
             Nothing -> empty
             Just l -> rblock (tw - termLen - il) (literal l)
         ]
+
+-- | Write a pandoc-style Markdown table.
+pandocTable ::
+  (Monad m) =>
+  -- | whether this is a multiline table
+  Bool ->
+  -- | whether the table has a header
+  Bool ->
+  -- | column alignments
+  [Alignment] ->
+  -- | column widths
+  [Double] ->
+  -- | table header cells
+  [Doc Text] ->
+  -- | table body rows
+  [[Doc Text]] ->
+  RR m (Doc Text)
+pandocTable multiline headless aligns widths rawHeaders rawRows = do
+  tw <- asks textWidth
+  wrap <- asks wrapText
+  let isSimple = all (== 0) widths
+  let alignHeader alignment = case alignment of
+        AlignLeft -> lblock
+        AlignCenter -> cblock
+        AlignRight -> rblock
+        AlignDefault -> lblock
+  -- Number of characters per column necessary to output every cell
+  -- without requiring a line break.
+  -- The @+2@ is needed for specifying the alignment.
+  let numChars = (+ 2) . maybe 0 maximum . nonEmpty . map offset
+  -- Number of characters per column necessary to output every cell
+  -- without requiring a line break *inside a word*.
+  -- The @+2@ is needed for specifying the alignment.
+  let minNumChars = (+ 2) . maybe 0 maximum . nonEmpty . map minOffset
+  let columns = transpose (rawHeaders : rawRows)
+  -- minimal column width without wrapping a single word
+  let relWidth w col =
+        max
+          (floor $ fromIntegral (tw - 1) * w)
+          ( if wrap == WrapAuto
+              then minNumChars col
+              else numChars col
+          )
+  let widthsInChars
+        | isSimple = map numChars columns
+        | otherwise = zipWith relWidth widths columns
+  let makeRow =
+        hcat
+          . intersperse (lblock 1 (literal " "))
+          . zipWith3 alignHeader aligns widthsInChars
+  let rows' = map makeRow rawRows
+  let head' = makeRow rawHeaders
+  let underline =
+        mconcat $
+          intersperse (literal " ") $
+            map (\width -> literal (T.replicate width "-")) widthsInChars
+  let border
+        | multiline =
+            literal $
+              T.replicate (sum widthsInChars + length widthsInChars - 1) "-"
+        | headless = underline
+        | otherwise = empty
+  let head'' =
+        if headless
+          then empty
+          else border <> cr <> head'
+  let body =
+        if multiline
+          then
+            vsep rows'
+              $$ if length rows' < 2
+                then blankline -- #4578
+                else empty
+          else vcat rows'
+  let bottom =
+        if headless
+          then underline
+          else border
+  return $ head'' $$ underline $$ body $$ bottom
 
 inlineListToVimdoc :: (PandocMonad m) => [Inline] -> RR m (Doc Text)
 inlineListToVimdoc inlines = hcat <$> mapM inlineToVimdoc inlines
