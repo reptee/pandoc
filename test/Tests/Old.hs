@@ -257,6 +257,7 @@ tests pandocPath =
       [ test' "pod" ["-f", "pod", "-t", "native"]
         "pod-reader.pod" "pod-reader.native"
       ]
+  , testGroup "vimdoc" [ testGroup "writer" $ writerTests' "vimdoc" ]
   ]
  where
     test'           = test pandocPath

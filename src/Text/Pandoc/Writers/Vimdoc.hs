@@ -21,7 +21,7 @@ import Text.Pandoc.Error (PandocError)
 import Text.Pandoc.Logging (LogMessage (..))
 import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
-import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers)
+import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (escapeURI, isURI)
 import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable, toTableOfContents)
@@ -139,6 +139,7 @@ blockToVimdoc (CodeBlock (_, cls, _) code) = do
   let lang = case cls of
         (lang' : _) -> lang'
         _ -> ""
+  -- NOTE: No blankline after the codeblock because closing `<` is concealed
   pure . vcat $
     [ ">" <> literal lang
     , nest sw (literal code)
@@ -149,36 +150,42 @@ blockToVimdoc block@(RawBlock format raw) = case format of
   "vimdoc" -> pure $ literal raw
   _ -> "" <$ report (BlockNotRendered block)
 
+-- Should it be formatted as plain text? Vimdoc does not support any form of
+-- quotes
 blockToVimdoc (BlockQuote blocks) = do
   content <- blockListToVimdoc blocks
-  pure $ prefixed "| " content
+  pure $ prefixed "| " content <> blankline
 
 blockToVimdoc (OrderedList listAttr items) = do
   -- TODO: both ordered and bullet- lists have no spacing between items
   -- regargless of content. It may make sense to add blankline if there is a
   -- paragraph or a nested list. (see isParaOrList from Writers/Jats)
+  let itemSpacer = if isTightList items then empty else blankline
   let itemsWithMarkers = zip (orderedListMarkers listAttr) items
   items' <- forM itemsWithMarkers $ \(marker, blocks) -> do
     let markerLen = T.length marker
 
     item' <- indent (markerLen + 1) $ blockListToVimdoc blocks
-    pure $ literal marker <> space <> nest (markerLen + 1) item'
-  pure $ vcat items'
+    pure $ literal marker <> space <> nest (markerLen + 1) item' <> itemSpacer
+  pure $ vcat items' <> blankline
 
 blockToVimdoc (BulletList items) = do
+  let itemSpacer = if isTightList items then empty else blankline
   items' <- forM items $ \blocks -> do
     let marker = "-"
     item <- indent 2 $ blockListToVimdoc blocks
-    pure $ marker <> " " <> nest 2 item
-  pure $ vcat items'
+    pure $ marker <> " " <> nest 2 item <> itemSpacer
+  pure $ vcat items' <> blankline
 
 blockToVimdoc (DefinitionList items) = do
   sw <- asks shiftWidth
+  let sepAll = if all (isTightList . snd) items then vcat else vsep
   items' <- forM items $ \(term, definitions) -> do
+    let sepCur = if isTightList definitions then vcat else vsep
     labeledTerm <- indent sw $ mkVimdocDefinitionTerm term
     definitions' <- indent (2 * sw) $ traverse blockListToVimdoc definitions
-    pure $ nest sw labeledTerm <> cr <> nest (2 * sw) (vsep definitions')
-  pure $ vsep items' <> blankline
+    pure $ nest sw labeledTerm <> cr <> nest (2 * sw) (sepCur definitions')
+  pure $ sepAll items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
 blockToVimdoc (Header level (ref, _, _) inlines) = do
@@ -208,7 +215,7 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
 
 blockToVimdoc HorizontalRule = do
   tw <- asks (writerColumns . writerOptions)
-  pure . literal $ T.replicate tw "-"
+  pure $ literal (T.replicate tw "-") <> blankline
 
 -- Based on blockToMarkdown' from Text.Pandoc.Writers.Markdown
 blockToVimdoc t@(Table (_, _, _) blkCapt specs thead tbody tfoot) = do
@@ -450,7 +457,6 @@ inlineToVimdoc (Link _ txt (src, _title)) = do
     Right link | isShortlink -> "|" <> link <> "|"
     Right link -> txt' <> delim <> "|" <> link <> "|"
     Left _ | isURI src, isShortlink -> src
-    Left _ | isURI src -> txt' <> " " <> src
     Left _
       | "#" `T.isPrefixOf` src ->
           -- TODO: something more elegant?
@@ -458,7 +464,7 @@ inlineToVimdoc (Link _ txt (src, _title)) = do
            in txt' <> delim <> "|" <> src' <> "|"
     -- TODO: vimdoc-TS does not seem to expect any extra characters around URL:
     -- https://github.com/neovim/tree-sitter-vimdoc/blob/ffa29e863738adfc1496717c4acb7aae92a80ed4/grammar.js#L225
-    Left _ -> txt' <> delim <> "<" <> src <> ">"
+    Left _ -> txt' <> delim <> src
 
 inlineToVimdoc (Image {}) = pure ""
 
