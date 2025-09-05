@@ -1,61 +1,39 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
-
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE Strict #-}
 
 module Text.Pandoc.Writers.Vimdoc (writeVimdoc) where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (forM)
 import Control.Monad.Reader
-import Control.Monad.State
 import Data.Default (Default (..))
+import Data.List (intercalate, intersperse, transpose)
+import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import Data.Maybe (fromJust, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Text.DocLayout hiding (char)
-import Text.Pandoc.Class (runPure, report)
-import Text.Pandoc.Class.PandocMonad (PandocMonad)
+import Text.DocLayout hiding (char, link, text)
+import Text.Pandoc.Class.PandocMonad ( report, PandocMonad )
 import Text.Pandoc.Definition
 import Text.Pandoc.Error (PandocError)
-import Text.Pandoc.Options (WrapOption (..), WriterOptions (..), isEnabled, Extension (..))
+import Text.Pandoc.Logging (LogMessage (..))
+import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
-import Text.Pandoc.Shared (capitalize, orderedListMarkers, onlySimpleTableCells)
+import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers)
 import Text.Pandoc.Templates (renderTemplate)
-import Text.Pandoc.URI (isURI, escapeURI)
-import Text.Pandoc.Writers.Markdown (writeMarkdown)
-import Text.Pandoc.Writers.Shared (defField, metaToContext, toTableOfContents, toLegacyTable)
+import Text.Pandoc.URI (escapeURI, isURI)
+import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable, toTableOfContents)
 import Text.Parsec (anyChar, char, eof, string, try)
-import System.IO.Unsafe (unsafePerformIO)
-import Debug.Trace (traceShowId)
 import Text.Read (readMaybe)
-import Data.List (intercalate, intersperse, transpose)
-import Text.Pandoc.Logging (LogMessage(..))
-import Data.List.NonEmpty (nonEmpty, NonEmpty (..))
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
-
--- NOTE: Test idea: each line in the render of random document not containing code block should not exceed textWidth characters
-
-test =
-  let content =
-        [ LineBlock [[Str "qq"], [Str "hello"]]
-        -- , CodeBlock ("rust", ["rustt", "qq"], []) "hello"
-        , RawBlock "markdown" "hello\nqq"
-        ]
-      meta = mempty
-   in runPure $ writeMarkdown def (Pandoc (Meta meta) content)
-
--- >>> test
--- Right "qq  \nhello\n\nhello\nqq\n"
 
 data WriterState = WriterState
   { indentLevel :: Int -- How much to indent the block. Inlines shouldn't
                        -- be concerned with indent level (I guess?)
-  , textWidth :: Int -- maximum length of a line
   , shiftWidth :: Int -- spaces per indentation level
-  , wrapText :: WrapOption
   , writerOptions :: WriterOptions
   }
 
@@ -63,28 +41,15 @@ instance Default WriterState where
   def =
     WriterState
       { indentLevel = 0
-      , textWidth = 78
       , shiftWidth = 4
-      , wrapText = WrapAuto
       , writerOptions = def
       }
 
 indent :: (Monad m) => Int -> (RR m a) -> (RR m a)
 indent n = local (\s -> s{indentLevel = indentLevel s + n})
 
-wrapAuto, wrapNone, wrapPreserve :: (Monad m) => RR m a -> RR m a
-wrapAuto = local (\st -> st{wrapText = WrapAuto})
-wrapNone = local (\st -> st{wrapText = WrapNone})
-wrapPreserve = local (\st -> st{wrapText = WrapPreserve})
-
 -- TODO: rename to VimdocWriterR
 type RR m = ReaderT WriterState m
-
-docTextWidth :: Meta -> Maybe Int
-docTextWidth meta = case lookupMeta "textwidth" meta of
-  Just (MetaInlines [Str tw]) -> readMaybe (T.unpack tw)
-  Just (MetaString tw) -> readMaybe (T.unpack tw)
-  _ -> Nothing
 
 docShiftWidth :: Meta -> Maybe Int
 docShiftWidth meta = case lookupMeta "shiftwidth" meta of
@@ -104,48 +69,45 @@ makeModeLine ws =
     , "et:" -- expandtab and finishing ":"
     ]
  where
-  tw = textWidth ws
+  tw = writerColumns . writerOptions $ ws
   sw = shiftWidth ws
 
 writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
 writeVimdoc opts document@(Pandoc meta _) =
-  -- TODO: remove
-  -- traceShowId (writerVariables opts) `seq`
-  --   traceShowId (meta) `seq`
-  runReaderT (pandocToVimdoc opts document) $
-    def{textWidth = tw, shiftWidth = sw, writerOptions = opts}
- where
-  tw = fromMaybe (textWidth def) $ docTextWidth meta
-  sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
+  let
+    sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
+   in
+    runReaderT (pandocToVimdoc opts document) $
+      def{shiftWidth = sw, writerOptions = opts}
 
 pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
 pandocToVimdoc opts (Pandoc meta body) = do
   st <- ask
 
   metadata <- metaToContext opts blockListToVimdoc inlineListToVimdoc meta
-  main <- traceShowId metadata `seq` blockListToVimdoc body
-  let modeline = makeModeLine st
+  main <- blockListToVimdoc body
   title <- inlineListToVimdoc $ docTitle meta
   authors <- traverse inlineListToVimdoc $ docAuthors meta
   let authors' = mconcat $ intersperse ("," <> space) (fmap nowrap authors)
+  let tw = writerColumns . writerOptions $ st
 
   let combinedTitle =
-        render (Just $ textWidth st) $
-          cblock (textWidth st) $
+        render (Just tw) . cblock tw $
             (title <> space)
               <> (if null authors' then "" else "by" <> space <> authors')
 
   -- This is placed here because I couldn't find a way to right-align text
   -- inside template to the width specified by a variable
   let toc_reminder =
-        render Nothing . rblock (textWidth st) $
+        render Nothing . rblock tw $
           ("Type |gO| to see the table of contents." :: Doc Text)
 
   -- TODO: nicer TOC (like `:h undotree-contents`)
   toc <-
-    fmap (render (Just $ textWidth st)) . blockToVimdoc $
+    fmap (render (Just tw)) . blockToVimdoc $
       toTableOfContents opts body
 
+  let modeline = makeModeLine st
   let context =
         defField "body" main
           . defField "toc" (if writerTableOfContents opts then toc else "")
@@ -156,8 +118,8 @@ pandocToVimdoc opts (Pandoc meta body) = do
 
   pure $
     case writerTemplate opts of
-      Just tpl -> render (Just $ textWidth st) $ renderTemplate tpl context
-      Nothing -> render (Just $ textWidth st) main
+      Just tpl -> render (Just tw) $ renderTemplate tpl context
+      Nothing -> render (Just tw) main
 
 blockListToVimdoc :: (PandocMonad m) => [Block] -> RR m (Doc Text)
 blockListToVimdoc blocks = vcat <$> mapM blockToVimdoc blocks
@@ -175,7 +137,7 @@ blockToVimdoc (LineBlock inliness) = vcat <$> mapM inlineListToVimdoc inliness
 blockToVimdoc (CodeBlock (_, cls, _) code) = do
   sw <- asks shiftWidth
   let lang = case cls of
-        (lang : _) -> lang
+        (lang' : _) -> lang'
         _ -> ""
   pure . vcat $
     [ ">" <> literal lang
@@ -214,16 +176,13 @@ blockToVimdoc (DefinitionList items) = do
   sw <- asks shiftWidth
   items' <- forM items $ \(term, definitions) -> do
     labeledTerm <- indent sw $ mkVimdocDefinitionTerm term
-
-    sw <- asks shiftWidth
     definitions' <- indent (2 * sw) $ traverse blockListToVimdoc definitions
-
     pure $ nest sw labeledTerm <> cr <> nest (2 * sw) (vsep definitions')
   pure $ vsep items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
 blockToVimdoc (Header level (ref, _, _) inlines) = do
-  tw <- asks textWidth
+  tw <- asks (writerColumns . writerOptions)
   let rule = case level of
         1 -> T.replicate tw "="
         2 -> T.replicate tw "-"
@@ -248,7 +207,7 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
       ]
 
 blockToVimdoc HorizontalRule = do
-  tw <- asks textWidth
+  tw <- asks (writerColumns . writerOptions)
   pure . literal $ T.replicate tw "-"
 
 -- Based on blockToMarkdown' from Text.Pandoc.Writers.Markdown
@@ -307,9 +266,9 @@ blockToVimdoc t@(Table (_, _, _) blkCapt specs thead tbody tfoot) = do
 
 -- TODO: how to handle figures in a format that can't display them?
 -- see how panvimdoc accomplishes it
-blockToVimdoc (Figure attr caption blocks) = blockListToVimdoc blocks
+blockToVimdoc (Figure _ _ blocks) = blockListToVimdoc blocks
 
-blockToVimdoc (Div attr blocks) = blockListToVimdoc blocks
+blockToVimdoc (Div _ blocks) = blockListToVimdoc blocks
 
 mkVimdocDefinitionTerm ::
   (PandocMonad m) =>
@@ -317,7 +276,7 @@ mkVimdocDefinitionTerm ::
   RR m (Doc Text)
 mkVimdocDefinitionTerm inlines = do
   il <- asks indentLevel
-  tw <- asks textWidth
+  tw <- asks (writerColumns . writerOptions)
   -- TODO: Maybe it should also check for attributes like `mapping`, so it
   -- will automatically generate labels that are literally the terms
   -- themselves
@@ -384,13 +343,14 @@ pandocTable multiline headless aligns widths rawHeaders rawRows = do
   -- x = (2 * length columns)         -- spaces for specifying the alignment
   -- y = (length columns - 1)         -- spaces between the columns
   -- x + y = (3 * length columns - 1) -- total needed correction
-  tw <- asks (\st -> textWidth st - il - 3 * length columns + 1)
-  wrap <- asks wrapText
+  tw <- asks (writerColumns . writerOptions)
+  let tw' = tw - il - 3 * length columns + 1
+  wrap <- asks (writerWrapText . writerOptions)
 
   -- minimal column width without wrapping a single word
   let relWidth w col =
         max
-          (floor $ fromIntegral (tw - 1) * w)
+          (floor $ fromIntegral (tw' - 1) * w)
           ( if wrap == WrapAuto
               then minNumChars col
               else numChars col
@@ -458,10 +418,11 @@ inlineToVimdoc (Code (_, cls, _) code) = do
 {- FOURMOLU_ENABLE -}
 
 inlineToVimdoc Space = pure space
-inlineToVimdoc SoftBreak = asks wrapText >>= \case
-  WrapAuto -> pure space
-  WrapNone -> pure space
-  WrapPreserve -> pure "\n"
+inlineToVimdoc SoftBreak =
+  asks (writerWrapText . writerOptions) >>= \case
+    WrapAuto -> pure space
+    WrapNone -> pure space
+    WrapPreserve -> pure "\n"
 
 -- Are line breaks always allowed?
 inlineToVimdoc LineBreak = pure "\n"
@@ -473,22 +434,6 @@ inlineToVimdoc inline@(RawInline (Format format) text) = case format of
   "vimdoc" -> pure $ literal text
   _ -> "" <$ report (InlineNotRendered inline)
 
--- TODO: TEST: empty link generation
--- TODO: TEST:
--- >>> refdocLinkToLink "https://neovim.io/doc/user/vim_diff.html#vim-differences"
--- Right "vim-differences"
---
--- TODO: TEST:
--- >>> refdocLinkToLink "https://neovim.io/doc/user/vim_diff.html"
--- Right "vim_diff.txt"
---
--- TODO: TEST:
--- >>> refdocLinkToLink "https://vimhelp.org/motion.txt.html"
--- Right "motion.txt"
---
--- TODO: TEST:
--- >>> refdocLinkToLink "https://vimhelp.org/motion.txt.html#motion.txt"
--- Right "motion.txt"
 inlineToVimdoc (Link _ txt (src, _title)) = do
   txt' <- render Nothing <$> inlineListToVimdoc txt
 
@@ -496,24 +441,24 @@ inlineToVimdoc (Link _ txt (src, _title)) = do
         [Str x] | escapeURI x == src -> True
         _ -> False
 
-  let space =
+  let delim =
         if " " `T.isSuffixOf` txt' && not (T.null txt')
           then ""
           else " "
 
   pure . literal $ case refdocLinkToLink src of
     Right link | isShortlink -> "|" <> link <> "|"
-    Right link -> txt' <> space <> "|" <> link <> "|"
+    Right link -> txt' <> delim <> "|" <> link <> "|"
     Left _ | isURI src, isShortlink -> src
     Left _ | isURI src -> txt' <> " " <> src
     Left _
       | "#" `T.isPrefixOf` src ->
           -- TODO: something more elegant?
           let src' = fromJust (T.stripPrefix "#" src)
-           in txt' <> space <> "|" <> src' <> "|"
+           in txt' <> delim <> "|" <> src' <> "|"
     -- TODO: vimdoc-TS does not seem to expect any extra characters around URL:
     -- https://github.com/neovim/tree-sitter-vimdoc/blob/ffa29e863738adfc1496717c4acb7aae92a80ed4/grammar.js#L225
-    Left _ -> txt' <> space <> "<" <> src <> ">"
+    Left _ -> txt' <> delim <> "<" <> src <> ">"
 
 inlineToVimdoc (Image {}) = pure ""
 
