@@ -191,9 +191,9 @@ blockToVimdoc (DefinitionList items) = do
   let sepAll = if all (isTightList . snd) items then vcat else vsep
   items' <- forM items $ \(term, definitions) -> do
     let sepCur = if isTightList definitions then vcat else vsep
-    labeledTerm <- indent sw $ mkVimdocDefinitionTerm term
-    definitions' <- indent (2 * sw) $ traverse blockListToVimdoc definitions
-    pure $ nest sw labeledTerm <> cr <> nest (2 * sw) (sepCur definitions')
+    labeledTerm <- mkVimdocDefinitionTerm term
+    definitions' <- indent sw $ traverse blockListToVimdoc definitions
+    pure $ labeledTerm <> cr <> nest sw (sepCur definitions')
   pure $ sepAll items' <> blankline
 
 -- TODO: reject SoftBreak and LineBreak?
