@@ -309,6 +309,9 @@ mkVimdocDefinitionTerm inlines = do
         [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocRef ref
         _ -> pure Nothing
 
+  term <- case inlines of
+    [Code _ code] | T.isPrefixOf ":" code -> pure $ literal code
+    _ -> inlineListToVimdoc inlines
   let termLen = offset term
   let labelLen = maybe 0 T.length label
 
