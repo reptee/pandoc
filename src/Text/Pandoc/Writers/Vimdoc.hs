@@ -35,6 +35,7 @@ data WriterState = WriterState
                        -- be concerned with indent level (I guess?)
   , shiftWidth :: Int -- spaces per indentation level
   , writerOptions :: WriterOptions
+  , vimdocPrefix :: Maybe Text
   }
 
 instance Default WriterState where
@@ -43,6 +44,7 @@ instance Default WriterState where
       { indentLevel = 0
       , shiftWidth = 4
       , writerOptions = def
+      , vimdocPrefix = Nothing
       }
 
 indent :: (Monad m) => Int -> (RR m a) -> (RR m a)
@@ -55,6 +57,12 @@ docShiftWidth :: Meta -> Maybe Int
 docShiftWidth meta = case lookupMeta "shiftwidth" meta of
   Just (MetaInlines [Str sw]) -> readMaybe (T.unpack sw)
   Just (MetaString sw) -> readMaybe (T.unpack sw)
+  _ -> Nothing
+
+docVimdocPrefix :: Meta -> Maybe Text
+docVimdocPrefix meta = case lookupMeta "vimdoc-prefix" meta of
+  Just (MetaInlines [Str pref]) -> Just pref
+  Just (MetaString pref) -> Just pref
   _ -> Nothing
 
 -- TODO: add tabstop
@@ -76,9 +84,10 @@ writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
 writeVimdoc opts document@(Pandoc meta _) =
   let
     sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
+    vp = docVimdocPrefix meta
    in
     runReaderT (pandocToVimdoc opts document) $
-      def{shiftWidth = sw, writerOptions = opts}
+      def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
 
 pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
 pandocToVimdoc opts (Pandoc meta body) = do
@@ -198,18 +207,16 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
     3 -> capitalize inlines
     _ -> inlines
 
+  label <- mkVimdocRef ref
   -- One manual space that ensures that even if spaceLeft is 0, title and ref
   -- don't touch each other
-  -- TODO: helper function to create labels. Add prefix (project name? input
-  -- file name with stripped ext?) to each label so that
-  -- each label was unique
-  let label = " *" <> ref <> "*"
+  let label' = " " <> label
   let spaceLeft = tw - T.length title
 
   pure $ vcat
       [ blankline
       , literal rule
-      , literal $ title <> T.justifyRight spaceLeft ' ' label
+      , literal $ title <> T.justifyRight spaceLeft ' ' label'
       , blankline
       ]
 
@@ -277,6 +284,13 @@ blockToVimdoc (Figure _ _ blocks) = blockListToVimdoc blocks
 
 blockToVimdoc (Div _ blocks) = blockListToVimdoc blocks
 
+mkVimdocRef :: (Monad m) => Text -> RR m Text
+mkVimdocRef ref = do
+  pref <- asks vimdocPrefix
+  case pref of
+    Nothing -> pure $ "*" <> ref <> "*"
+    Just pref' -> pure $ "*" <> pref' <> "-" <> ref <> "*"
+
 mkVimdocDefinitionTerm ::
   (PandocMonad m) =>
   [Inline] ->
@@ -287,12 +301,14 @@ mkVimdocDefinitionTerm inlines = do
   -- TODO: Maybe it should also check for attributes like `mapping`, so it
   -- will automatically generate labels that are literally the terms
   -- themselves
-  let label = case inlines of
-        [Code (ref, _, _) _] | not (T.null ref) -> Just $ "*" <> ref <> "*"
-        [Span (ref, _, _) _] | not (T.null ref) -> Just $ "*" <> ref <> "*"
-        _ -> Nothing
+  -- NOTE: commands in vim are unique, so they get no prefix
+  label <- case inlines of
+        [Code (ref, _, _) code] | T.isPrefixOf ":" code ->
+          pure . Just $ "*" <> ref <> "*"
+        [Code (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocRef ref
+        [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocRef ref
+        _ -> pure Nothing
 
-  term <- inlineListToVimdoc inlines
   let termLen = offset term
   let labelLen = maybe 0 T.length label
 
