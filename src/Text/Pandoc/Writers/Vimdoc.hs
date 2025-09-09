@@ -21,12 +21,17 @@ import Text.Pandoc.Error (PandocError)
 import Text.Pandoc.Logging (LogMessage (..))
 import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
-import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList)
+import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList, makeSections, removeFormatting)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (escapeURI, isURI)
 import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable, toTableOfContents)
 import Text.Parsec (anyChar, char, eof, string, try)
 import Text.Read (readMaybe)
+import Debug.Trace (traceShowId)
+import Text.Pandoc.Chunks (tocToList, toTOCTree, SecInfo (..))
+import Data.Tree (Tree(..))
+import Text.Pandoc.Walk (walk)
+import Data.Functor ((<&>))
 
 -- NOTE: used xwiki, typst, zimwiki writers as a reference
 
@@ -89,6 +94,65 @@ writeVimdoc opts document@(Pandoc meta _) =
     runReaderT (pandocToVimdoc opts document) $
       def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
 
+-- | Build a single formatted TOC line
+tocEntryToLine :: (PandocMonad m) => SecInfo -> RR m Text
+tocEntryToLine secinfo = do
+  rightRef <- mkVimdocRef (secId secinfo)
+  let numberStr = case secNumber secinfo of
+        Nothing -> ""
+        Just x | '.' `T.elem` x -> x <> " "
+        Just x -> x <> ". "
+  title <- inlineListToVimdoc $ removeFormatting (secTitle secinfo)
+  let titlePlain = render Nothing (title <> " ")
+
+  -- length sub 2 because vertical bars are concealed
+  let rightRefLen = max 0 (T.length rightRef - 2)
+  let numberLen = T.length numberStr
+  let leftLen = numberLen + T.length titlePlain
+  let padForRight = 1
+  textWidth <- asks (writerColumns . writerOptions)
+  il <- asks indentLevel
+
+  -- positive when we lack space (i.e. content is too long)
+  let lack = (il + leftLen + padForRight + rightRefLen) - textWidth
+
+  -- when lacking, truncate title reserving 3+ chars for ellipsis
+  let finalTitle =
+        if lack >= 0
+          then
+            let trunc = T.dropEnd (lack + 3) titlePlain
+                stripped = T.stripEnd trunc
+                ellipsis =
+                  T.replicate (3 + T.length trunc - T.length stripped) "."
+             in stripped <> ellipsis
+          else titlePlain
+
+  -- Negative lack means we have an excess of space, so we fill it with dots
+  let dots = T.replicate (negate lack) "."
+
+  pure . T.concat $ [numberStr, finalTitle, dots, " ", rightRef]
+
+vimdocTOC :: (PandocMonad m) => WriterState -> [Block] -> RR m (Doc Text)
+vimdocTOC (WriterState{writerOptions = opts}) blocks = do
+  let (Node _ subtrees) =
+        toTOCTree $ makeSections (writerNumberSections opts) Nothing blocks
+  let tocDepth = writerTOCDepth opts
+  let isBelowTocDepth (Node sec _) = secLevel sec <= tocDepth
+
+  let makeItem :: (PandocMonad m) => Tree SecInfo -> RR m (Doc Text)
+      makeItem (Node secinfo xs) = do
+        line <- tocEntryToLine secinfo
+        -- When unnumbered, indent constantly by two,
+        -- otherwise indent by (length of marker + 1)
+        let markerLen = 1 + maybe 1 T.length (secNumber secinfo)
+        childItems <-
+          indent markerLen $
+            traverse makeItem (filter isBelowTocDepth xs)
+        pure (literal line $$ nest markerLen (vcat childItems))
+
+  items <- traverse makeItem (filter isBelowTocDepth subtrees)
+  pure $ vcat items
+
 pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
 pandocToVimdoc opts (Pandoc meta body) = do
   st <- ask
@@ -111,10 +175,10 @@ pandocToVimdoc opts (Pandoc meta body) = do
         render Nothing . rblock tw $
           ("Type |gO| to see the table of contents." :: Doc Text)
 
-  -- TODO: nicer TOC (like `:h undotree-contents`)
-  toc <-
-    fmap (render (Just tw)) . blockToVimdoc $
-      toTableOfContents opts body
+  toc <- render (Just tw) <$> vimdocTOC st body
+
+  -- traceShowId (toTableOfContents opts body) `seq` pure ()
+  -- traceShowId (vimdocTOC st body) `seq` pure ()
 
   let modeline = makeModeLine st
   let context =
@@ -207,7 +271,7 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
     3 -> capitalize inlines
     _ -> inlines
 
-  label <- mkVimdocRef ref
+  label <- mkVimdocTag ref
   -- One manual space that ensures that even if spaceLeft is 0, title and ref
   -- don't touch each other
   let label' = " " <> label
@@ -284,12 +348,33 @@ blockToVimdoc (Figure _ _ blocks) = blockListToVimdoc blocks
 
 blockToVimdoc (Div _ blocks) = blockListToVimdoc blocks
 
+{- | Create a vimdoc tag. Tag is prefixed with "$vimdocPrefix-" if vimdocPrefix
+is a Just value.
+>>> runReader (mkVimdocTag "abc") def
+"*abc*"
+>>> runReader (mkVimdocTag "abc") (def{vimdocPrefix = Just "myCoolProject"})
+"*myCoolProject-abc*"
+-}
+mkVimdocTag :: (Monad m) => Text -> RR m Text
+mkVimdocTag tag = do
+  asks vimdocPrefix <&> \case
+    _ | T.null tag -> ""
+    Nothing -> "*" <> tag <> "*"
+    Just pref' -> "*" <> pref' <> "-" <> tag <> "*"
+
+{- | Create a hotlink for a tag, ie. a followable vimdoc link. Tag is prefixed
+ - with "$vimdocPrefix-" if vimdocPrefix is a Just value
+>>> runReader (mkVimdocRef "abc") def
+"|abc|"
+>>> runReader (mkVimdocRef "abc") (def{vimdocPrefix = Just "myCoolProject"})
+"|myCoolProject-abc|"
+-}
 mkVimdocRef :: (Monad m) => Text -> RR m Text
-mkVimdocRef ref = do
-  pref <- asks vimdocPrefix
-  case pref of
-    Nothing -> pure $ "*" <> ref <> "*"
-    Just pref' -> pure $ "*" <> pref' <> "-" <> ref <> "*"
+mkVimdocRef ref =
+  asks vimdocPrefix <&> \case
+    _ | T.null ref -> ""
+    Nothing -> "|" <> ref <> "|"
+    Just pref' -> "|" <> pref' <> "-" <> ref <> "|"
 
 mkVimdocDefinitionTerm ::
   (PandocMonad m) =>
@@ -305,8 +390,8 @@ mkVimdocDefinitionTerm inlines = do
   label <- case inlines of
         [Code (ref, _, _) code] | T.isPrefixOf ":" code ->
           pure . Just $ "*" <> ref <> "*"
-        [Code (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocRef ref
-        [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocRef ref
+        [Code (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
+        [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
         _ -> pure Nothing
 
   term <- case inlines of
