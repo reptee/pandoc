@@ -10,36 +10,36 @@ markdown test suite.
 --------------------------------------------------------------------------------
 
 ================================================================================
-Headers                                                                *headers*
+Headers                                                                  *headers*
 
 --------------------------------------------------------------------------------
-Level 2 with an embedded link /url               *level-2-with-an-embedded-link*
+Level 2 with an embedded link /url                 *level-2-with-an-embedded-link*
 
-LEVEL 3 WITH EMPHASIS                                    *level-3-with-emphasis*
+LEVEL 3 WITH EMPHASIS                                      *level-3-with-emphasis*
 
-Level 4                                                                *level-4*
+Level 4                                                                  *level-4*
 
-Level 5                                                                *level-5*
+Level 5                                                                  *level-5*
 
 ================================================================================
-Level 1                                                                *level-1*
+Level 1                                                                  *level-1*
 
 --------------------------------------------------------------------------------
-Level 2 with emphasis                                    *level-2-with-emphasis*
+Level 2 with emphasis                                      *level-2-with-emphasis*
 
-LEVEL 3                                                                *level-3*
+LEVEL 3                                                                  *level-3*
 
 with no blank line
 
 --------------------------------------------------------------------------------
-Level 2                                                                *level-2*
+Level 2                                                                  *level-2*
 
 with no blank line
 
 --------------------------------------------------------------------------------
 
 ================================================================================
-Paragraphs                                                          *paragraphs*
+Paragraphs                                                            *paragraphs*
 
 Here’s a regular paragraph.
 
@@ -55,7 +55,7 @@ here.
 --------------------------------------------------------------------------------
 
 ================================================================================
-Block Quotes                                                      *block-quotes*
+Block Quotes                                                        *block-quotes*
 
 E-mail style:
 
@@ -86,7 +86,7 @@ And a following paragraph.
 --------------------------------------------------------------------------------
 
 ================================================================================
-Code Blocks                                                        *code-blocks*
+Code Blocks                                                          *code-blocks*
 
 Code:
 
@@ -109,10 +109,10 @@ And:
 --------------------------------------------------------------------------------
 
 ================================================================================
-Lists                                                                    *lists*
+Lists                                                                      *lists*
 
 --------------------------------------------------------------------------------
-Unordered                                                            *unordered*
+Unordered                                                              *unordered*
 
 Asterisks tight:
 
@@ -157,7 +157,7 @@ Minuses loose:
 - Minus 3
 
 --------------------------------------------------------------------------------
-Ordered                                                                *ordered*
+Ordered                                                                  *ordered*
 
 Tight:
 
@@ -198,7 +198,7 @@ Multiple paragraphs:
 3. Item 3.
 
 --------------------------------------------------------------------------------
-Nested                                                                  *nested*
+Nested                                                                    *nested*
 
 - Tab
   - Tab
@@ -226,7 +226,7 @@ Same thing but with paragraphs:
 3. Third
 
 --------------------------------------------------------------------------------
-Tabs and spaces                                                *tabs-and-spaces*
+Tabs and spaces                                                  *tabs-and-spaces*
 
 - this is a list item indented with tabs
 
@@ -237,7 +237,7 @@ Tabs and spaces                                                *tabs-and-spaces*
   - this is an example list item indented with spaces
 
 --------------------------------------------------------------------------------
-Fancy list markers                                          *fancy-list-markers*
+Fancy list markers                                            *fancy-list-markers*
 
 (2) begins with 2
 
@@ -272,7 +272,7 @@ B. Williams
 --------------------------------------------------------------------------------
 
 ================================================================================
-Definition Lists                                              *definition-lists*
+Definition Lists                                                *definition-lists*
 
 Tight using spaces:
 
@@ -353,7 +353,7 @@ orange
     2. sublist
 
 ================================================================================
-HTML Blocks                                                        *html-blocks*
+HTML Blocks                                                          *html-blocks*
 
 Simple block on one line:
 
@@ -407,7 +407,7 @@ Hr’s:
 --------------------------------------------------------------------------------
 
 ================================================================================
-Inline Markup                                                    *inline-markup*
+Inline Markup                                                      *inline-markup*
 
 This is emphasized, and so is this.
 
@@ -437,7 +437,7 @@ a^b c^d, a~b c~d.
 --------------------------------------------------------------------------------
 
 ================================================================================
-Smart quotes, ellipses, dashes                    *smart-quotes-ellipses-dashes*
+Smart quotes, ellipses, dashes                      *smart-quotes-ellipses-dashes*
 
 "Hello," said the spider. "'Shelob' is my name."
 
@@ -459,7 +459,7 @@ Ellipses…and…and….
 --------------------------------------------------------------------------------
 
 ================================================================================
-LaTeX                                                                    *latex*
+LaTeX                                                                      *latex*
 
 - 
 - `$2+2=4$`
@@ -483,7 +483,7 @@ Here’s a LaTeX table:
 --------------------------------------------------------------------------------
 
 ================================================================================
-Special Characters                                          *special-characters*
+Special Characters                                            *special-characters*
 
 Here is some unicode:
 
@@ -538,10 +538,10 @@ Minus: -
 --------------------------------------------------------------------------------
 
 ================================================================================
-Links                                                                    *links*
+Links                                                                      *links*
 
 --------------------------------------------------------------------------------
-Explicit                                                              *explicit*
+Explicit                                                                *explicit*
 
 Just a URL /url/.
 
@@ -562,7 +562,7 @@ Email link mailto:nobody@nowhere.net
 Empty .
 
 --------------------------------------------------------------------------------
-Reference                                                            *reference*
+Reference                                                              *reference*
 
 Foo bar /url/.
 
@@ -586,7 +586,7 @@ Foo bar /url/.
 Foo biz /url/.
 
 --------------------------------------------------------------------------------
-With ampersands                                                *with-ampersands*
+With ampersands                                                  *with-ampersands*
 
 Here’s a link with an ampersand in the URL http://example.com/?foo=1&bar=2.
 
@@ -597,7 +597,7 @@ Here’s an inline link /script?foo=1&bar=2.
 Here’s an inline link in pointy braces /script?foo=1&bar=2.
 
 --------------------------------------------------------------------------------
-Autolinks                                                            *autolinks*
+Autolinks                                                              *autolinks*
 
 With an ampersand: http://example.com/?foo=1&bar=2
 
@@ -617,7 +617,7 @@ Auto-links should not occur here: `<http://example.com/>`
 --------------------------------------------------------------------------------
 
 ================================================================================
-Images                                                                  *images*
+Images                                                                    *images*
 
 From "Voyage dans la Lune" by Georges Melies (1902):
 
@@ -626,7 +626,7 @@ Here is a movie icon.
 --------------------------------------------------------------------------------
 
 ================================================================================
-Footnotes                                                            *footnotes*
+Footnotes                                                              *footnotes*
 
 Here is a footnote reference,Here is the footnote. It can go anywhere after the
 footnote reference. It need not be placed at the end of the document.

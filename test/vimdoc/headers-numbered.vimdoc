@@ -30,35 +30,35 @@
 Headers with a short title and implicit ref. Last 3 headers are unnumbered.
 
 ==============================================================================
-unremarkable header 1                                  *unremarkable-header-1*
+unremarkable header 1                                    *unremarkable-header-1*
 
 ------------------------------------------------------------------------------
-unremarkable header 2                                  *unremarkable-header-2*
+unremarkable header 2                                    *unremarkable-header-2*
 
-UNREMARKABLE HEADER 3                                  *unremarkable-header-3*
+UNREMARKABLE HEADER 3                                    *unremarkable-header-3*
 
-UNREMARKABLE HEADER 3                                *unremarkable-header-3-1*
+UNREMARKABLE HEADER 3                                  *unremarkable-header-3-1*
 
 ------------------------------------------------------------------------------
-unremarkable header 2                                *unremarkable-header-2-1*
+unremarkable header 2                                  *unremarkable-header-2-1*
 
-UNREMARKABLE HEADER 3                                *unremarkable-header-3-2*
+UNREMARKABLE HEADER 3                                  *unremarkable-header-3-2*
 
-UNREMARKABLE HEADER 3                                *unremarkable-header-3-3*
+UNREMARKABLE HEADER 3                                  *unremarkable-header-3-3*
 
 ------------------------------------------------------------------------------
 
 Headers with various inline elements
 
 ==============================================================================
-bold italic underline strikethrough                                  *short11*
+bold italic underline strikethrough                                    *short11*
 
 ------------------------------------------------------------------------------
-superscript2 subscript3                                              *short21*
+superscript2 subscript3                                                *short21*
 
-SMALLCAPS `code` `$inline math$` `$display math$`                    *short31*
+SMALLCAPS `code` `$inline math$` `$display math$`                      *short31*
 
-LINK example.com                                                     *short32*
+LINK example.com                                                       *short32*
 
 ------------------------------------------------------------------------------
 

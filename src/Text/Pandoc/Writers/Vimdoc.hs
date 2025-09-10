@@ -269,7 +269,8 @@ blockToVimdoc (Header level (ref, _, _) inlines) = do
   -- One manual space that ensures that even if spaceLeft is 0, title and ref
   -- don't touch each other
   let label' = " " <> label
-  let spaceLeft = tw - T.length title
+  -- (+ 2) due to stars concealment
+  let spaceLeft = tw - T.length title + 2
 
   pure $ vcat
       [ blankline
@@ -395,15 +396,21 @@ mkVimdocDefinitionTerm inlines = do
       pure . mconcat $
         [ case label of
             Nothing -> empty
-            Just l -> flush (rblock tw $ literal l) <> cr
+            -- (+2) due to stars concealment
+            Just l -> flush (rblock (tw + 2) $ literal l) <> cr
         , term
         ]
     else
       pure . mconcat $
-        [ term
+        [ -- Since we calculated that label fits on the same line as
+          -- term and since label actually must exceed textwidth to align
+          -- properly, we disable wrapping.
+          -- vvvvvvvv
+          nowrap term
         , case label of
             Nothing -> empty
-            Just l -> rblock (tw - termLen - il) (literal l)
+            -- (+2) due to stars concealment
+            Just l -> rblock (tw - termLen - il + 2) (literal l)
         ]
 
 -- | Write a vimdoc table
