@@ -70,13 +70,20 @@ docVimdocPrefix meta = case lookupMeta "vimdoc-prefix" meta of
   Just (MetaString pref) -> Just pref
   _ -> Nothing
 
--- TODO: add tabstop
+{- | Build a vim modeline
+>>> makeModeLine def
+" vim:tw=72:sw=4:ts=4:ft=help:norl:et:"
+
+Extra space in the beginning is deliberate because it appears in help pages
+bundled with vim
+-}
 makeModeLine :: WriterState -> Text
 makeModeLine ws =
   T.pack . intercalate ":" $
-    [ " vim" -- deliberate extra space in the style of bundled help pages
+    [ " vim"
     , "tw=" <> show tw
     , "sw=" <> show sw
+    , "ts=" <> show sw
     , "ft=help"
     , "norl" -- left-to-right text
     , "et:" -- expandtab and finishing ":"
