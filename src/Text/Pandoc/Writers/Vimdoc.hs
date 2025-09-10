@@ -8,6 +8,7 @@ module Text.Pandoc.Writers.Vimdoc (writeVimdoc) where
 import Control.Applicative (optional, (<|>))
 import Control.Monad (forM)
 import Control.Monad.Reader
+import Control.Monad.State
 import Data.Default (Default (..))
 import Data.List (intercalate, intersperse, transpose)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
@@ -21,7 +22,7 @@ import Text.Pandoc.Error (PandocError)
 import Text.Pandoc.Logging (LogMessage (..))
 import Text.Pandoc.Options (WrapOption (..), WriterOptions (..))
 import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
-import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList, makeSections, removeFormatting)
+import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList, makeSections, removeFormatting, tshow)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (escapeURI, isURI)
 import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable)
@@ -30,6 +31,9 @@ import Text.Read (readMaybe)
 import Text.Pandoc.Chunks (toTOCTree, SecInfo (..))
 import Data.Tree (Tree(..))
 import Data.Functor ((<&>))
+import Data.Sequence (Seq, (|>), (<|))
+import qualified Data.Sequence as Seq
+import Data.Foldable (toList)
 
 data WriterState = WriterState
   { indentLevel :: Int -- How much to indent the block. Inlines shouldn't
@@ -52,7 +56,10 @@ indent :: (Monad m) => Int -> (RR m a) -> (RR m a)
 indent n = local (\s -> s{indentLevel = indentLevel s + n})
 
 -- TODO: rename to VimdocWriterR
-type RR m = ReaderT WriterState m
+type RR m = StateT (Seq (Doc Text)) (ReaderT WriterState m)
+
+runRR :: (Monad m) => Seq (Doc Text) -> WriterState -> RR m a -> m a
+runRR footnotes opts action = runReaderT (evalStateT action footnotes) opts
 
 docShiftWidth :: Meta -> Maybe Int
 docShiftWidth meta = case lookupMeta "shiftwidth" meta of
@@ -152,16 +159,26 @@ writeVimdoc opts document@(Pandoc meta _) =
   let
     sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
     vp = docVimdocPrefix meta
+    footnotes = Seq.empty
+    initialEnv = def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
    in
-    runReaderT (pandocToVimdoc opts document) $
-      def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
+    runRR footnotes initialEnv $ pandocToVimdoc document
 
-pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
-pandocToVimdoc opts (Pandoc meta body) = do
+pandocToVimdoc :: (PandocMonad m) => Pandoc -> RR m Text
+pandocToVimdoc (Pandoc meta body) = do
   st <- ask
+  let opts = writerOptions st
 
   metadata <- metaToContext opts blockListToVimdoc inlineListToVimdoc meta
-  main <- blockListToVimdoc body
+  main <- do
+    body' <- blockListToVimdoc body
+    footnotes <- get
+    rule <- blockToVimdoc HorizontalRule
+    let footnotes' = if Seq.null footnotes
+          then Empty
+          else vsep (toList $ rule <| footnotes)
+    pure $ body' <> blankline <> footnotes'
+
   title <- inlineListToVimdoc $ docTitle meta
   authors <- traverse inlineListToVimdoc $ docAuthors meta
   let authors' = mconcat $ intersperse ("," <> space) (fmap nowrap authors)
@@ -561,8 +578,19 @@ inlineToVimdoc (Link _ txt (src, _)) = do
 
 inlineToVimdoc (Image {}) = pure ""
 
--- TODO: note handling
-inlineToVimdoc (Note blocks) = blockListToVimdoc blocks
+inlineToVimdoc (Note blocks) = do
+  newN <- gets (succ . Seq.length)
+  contents <- blockListToVimdoc blocks
+  tag <- mkVimdocTag ("footnote" <> tshow newN)
+  tw <- asks (writerColumns . writerOptions)
+
+  -- (+2) due to concealment of stars
+  --                     vvvvvvvv
+  let taggedContents = rblock (tw + 2) (literal tag) $$ contents
+  modify (|> taggedContents)
+
+  ref <- mkVimdocRef ("footnote" <> tshow newN)
+  pure $ space <> literal ref
 
 inlineToVimdoc (Span _ inlines) = inlineListToVimdoc inlines
 
