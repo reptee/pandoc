@@ -24,16 +24,12 @@ import Text.Pandoc.Parsing.General (many1Till, many1TillChar, readWith)
 import Text.Pandoc.Shared (capitalize, onlySimpleTableCells, orderedListMarkers, isTightList, makeSections, removeFormatting)
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.URI (escapeURI, isURI)
-import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable, toTableOfContents)
+import Text.Pandoc.Writers.Shared (defField, metaToContext, toLegacyTable)
 import Text.Parsec (anyChar, char, eof, string, try)
 import Text.Read (readMaybe)
-import Debug.Trace (traceShowId)
-import Text.Pandoc.Chunks (tocToList, toTOCTree, SecInfo (..))
+import Text.Pandoc.Chunks (toTOCTree, SecInfo (..))
 import Data.Tree (Tree(..))
-import Text.Pandoc.Walk (walk)
 import Data.Functor ((<&>))
-
--- NOTE: used xwiki, typst, zimwiki writers as a reference
 
 data WriterState = WriterState
   { indentLevel :: Int -- How much to indent the block. Inlines shouldn't
@@ -91,15 +87,6 @@ makeModeLine ws =
  where
   tw = writerColumns . writerOptions $ ws
   sw = shiftWidth ws
-
-writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
-writeVimdoc opts document@(Pandoc meta _) =
-  let
-    sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
-    vp = docVimdocPrefix meta
-   in
-    runReaderT (pandocToVimdoc opts document) $
-      def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
 
 -- | Build a single formatted TOC line
 tocEntryToLine :: (PandocMonad m) => SecInfo -> RR m Text
@@ -160,6 +147,15 @@ vimdocTOC (WriterState{writerOptions = opts}) blocks = do
   items <- traverse makeItem (filter isBelowTocDepth subtrees)
   pure $ vcat items
 
+writeVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> m Text
+writeVimdoc opts document@(Pandoc meta _) =
+  let
+    sw = fromMaybe (shiftWidth def) $ docShiftWidth meta
+    vp = docVimdocPrefix meta
+   in
+    runReaderT (pandocToVimdoc opts document) $
+      def{shiftWidth = sw, writerOptions = opts, vimdocPrefix = vp}
+
 pandocToVimdoc :: (PandocMonad m) => WriterOptions -> Pandoc -> RR m Text
 pandocToVimdoc opts (Pandoc meta body) = do
   st <- ask
@@ -183,9 +179,6 @@ pandocToVimdoc opts (Pandoc meta body) = do
           ("Type |gO| to see the table of contents." :: Doc Text)
 
   toc <- render (Just tw) <$> vimdocTOC st body
-
-  -- traceShowId (toTableOfContents opts body) `seq` pure ()
-  -- traceShowId (vimdocTOC st body) `seq` pure ()
 
   let modeline = makeModeLine st
   let context =
@@ -230,16 +223,11 @@ blockToVimdoc block@(RawBlock format raw) = case format of
   "vimdoc" -> pure $ literal raw
   _ -> "" <$ report (BlockNotRendered block)
 
--- Should it be formatted as plain text? Vimdoc does not support any form of
--- quotes
 blockToVimdoc (BlockQuote blocks) = do
   content <- blockListToVimdoc blocks
   pure $ prefixed "| " content <> blankline
 
 blockToVimdoc (OrderedList listAttr items) = do
-  -- TODO: both ordered and bullet- lists have no spacing between items
-  -- regargless of content. It may make sense to add blankline if there is a
-  -- paragraph or a nested list. (see isParaOrList from Writers/Jats)
   let itemSpacer = if isTightList items then empty else blankline
   let itemsWithMarkers = zip (orderedListMarkers listAttr) items
   items' <- forM itemsWithMarkers $ \(marker, blocks) -> do
@@ -267,7 +255,6 @@ blockToVimdoc (DefinitionList items) = do
     pure $ labeledTerm <> cr <> nest sw (sepCur definitions')
   pure $ sepAll items' <> blankline
 
--- TODO: reject SoftBreak and LineBreak?
 blockToVimdoc (Header level (ref, _, _) inlines) = do
   tw <- asks (writerColumns . writerOptions)
   let rule = case level of
@@ -339,18 +326,16 @@ blockToVimdoc t@(Table (_, _, _) blkCapt specs thead tbody tfoot) = do
         -- Simple table
         tbl <-
           indent sw $
-            pandocTable False hasHeader aligns' widths' rawHeaders rawRows
+            vimdocTable False hasHeader aligns' widths' rawHeaders rawRows
         pure $ nest sw (tbl $$ caption'') $$ blankline
     | not (hasBlocks || hasColRowSpans) -> do
         -- Multiline table
         tbl <-
           indent sw $
-            pandocTable True hasHeader aligns' widths' rawHeaders rawRows
+            vimdocTable True hasHeader aligns' widths' rawHeaders rawRows
         pure $ nest sw (tbl $$ caption'') $$ blankline
     | otherwise -> ("[TABLE]" $$ caption'') <$ report (BlockNotRendered t)
 
--- TODO: how to handle figures in a format that can't display them?
--- see how panvimdoc accomplishes it
 blockToVimdoc (Figure _ _ blocks) = blockListToVimdoc blocks
 
 blockToVimdoc (Div _ blocks) = blockListToVimdoc blocks
@@ -390,16 +375,14 @@ mkVimdocDefinitionTerm ::
 mkVimdocDefinitionTerm inlines = do
   il <- asks indentLevel
   tw <- asks (writerColumns . writerOptions)
-  -- TODO: Maybe it should also check for attributes like `mapping`, so it
-  -- will automatically generate labels that are literally the terms
-  -- themselves
-  -- NOTE: commands in vim are unique, so they get no prefix
   label <- case inlines of
-        [Code (ref, _, _) code] | T.isPrefixOf ":" code ->
+    -- NOTE: commands in vim are unique, so they get no prefix
+    [Code (ref, _, _) code]
+      | T.isPrefixOf ":" code ->
           pure . Just $ "*" <> ref <> "*"
-        [Code (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
-        [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
-        _ -> pure Nothing
+    [Code (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
+    [Span (ref, _, _) _] | not (T.null ref) -> Just <$> mkVimdocTag ref
+    _ -> pure Nothing
 
   term <- case inlines of
     [Code _ code] | T.isPrefixOf ":" code -> pure $ literal code
@@ -423,8 +406,8 @@ mkVimdocDefinitionTerm inlines = do
             Just l -> rblock (tw - termLen - il) (literal l)
         ]
 
--- | Write a pandoc-style Markdown table.
-pandocTable ::
+-- | Write a vimdoc table
+vimdocTable ::
   (Monad m) =>
   -- | whether this is a multiline table
   Bool ->
@@ -439,7 +422,7 @@ pandocTable ::
   -- | table body rows
   [[Doc Text]] ->
   RR m (Doc Text)
-pandocTable multiline headless aligns widths rawHeaders rawRows = do
+vimdocTable multiline headless aligns widths rawHeaders rawRows = do
   let isSimple = all (== 0) widths
   let alignHeader alignment = case alignment of
         AlignLeft -> lblock
@@ -492,7 +475,7 @@ pandocTable multiline headless aligns widths rawHeaders rawRows = do
           then
             vsep rows'
               $$ if length rows' < 2
-                then blankline -- #4578
+                then blankline
                 else empty
           else vcat rows'
   return $
@@ -523,36 +506,31 @@ inlineToVimdoc (Quoted typ inlines) =
   let quote = case typ of SingleQuote -> "'"; DoubleQuote -> "\""
    in inlineListToVimdoc inlines >>= \text -> pure (quote <> text <> quote)
 
--- TODO: is there reasonable syntax? What does markdown do?
 inlineToVimdoc (Cite _citations inlines) = inlineListToVimdoc inlines
 
-{- FOURMOLU_DISABLE -}
 inlineToVimdoc (Code (_, cls, _) code) = do
   let hasNoLang = null cls
   pure . literal $ case T.words code of
     [":help", ref] | hasNoLang -> "|" <> ref <> "|"
     [":h", ref]    | hasNoLang -> "|" <> ref <> "|"
     _                          -> "`" <> code <> "`"
-{- FOURMOLU_ENABLE -}
 
 inlineToVimdoc Space = pure space
 inlineToVimdoc SoftBreak =
   asks (writerWrapText . writerOptions) >>= \case
     WrapAuto -> pure space
-    WrapNone -> pure space
+    WrapNone -> pure " "
     WrapPreserve -> pure "\n"
 
--- Are line breaks always allowed?
 inlineToVimdoc LineBreak = pure "\n"
 
--- TODO: is it the best way to handle this?
-inlineToVimdoc (Math _mathType math) = pure . literal $ "`$" <> math <> "$`"
+inlineToVimdoc (Math _ math) = pure . literal $ "`$" <> math <> "$`"
 
 inlineToVimdoc inline@(RawInline (Format format) text) = case format of
   "vimdoc" -> pure $ literal text
   _ -> "" <$ report (InlineNotRendered inline)
 
-inlineToVimdoc (Link _ txt (src, _title)) = do
+inlineToVimdoc (Link _ txt (src, _)) = do
   txt' <- render Nothing <$> inlineListToVimdoc txt
 
   let isShortlink = case txt of
@@ -570,17 +548,13 @@ inlineToVimdoc (Link _ txt (src, _title)) = do
     Left _ | isURI src, isShortlink -> src
     Left _
       | "#" `T.isPrefixOf` src ->
-          -- TODO: something more elegant?
           let src' = fromJust (T.stripPrefix "#" src)
            in txt' <> delim <> "|" <> src' <> "|"
-    -- TODO: vimdoc-TS does not seem to expect any extra characters around URL:
-    -- https://github.com/neovim/tree-sitter-vimdoc/blob/ffa29e863738adfc1496717c4acb7aae92a80ed4/grammar.js#L225
     Left _ -> txt' <> delim <> src
 
 inlineToVimdoc (Image {}) = pure ""
 
--- TODO: mimic ANSI writer,
---       see how panvimdoc handles it
+-- TODO: note handling
 inlineToVimdoc (Note blocks) = blockListToVimdoc blocks
 
 inlineToVimdoc (Span _ inlines) = inlineListToVimdoc inlines
